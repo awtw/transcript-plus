@@ -9,6 +9,7 @@
     "build": "npm run build --workspace apps/desktop",
     "desktop": "npm run tauri --workspace apps/desktop -- dev",
     "desktop:build": "npm run tauri --workspace apps/desktop -- build",
+    "desktop:package:mac": "uv run --extra asr --extra packaging python packaging/build_core.py && npm run desktop:build -- --bundles app,dmg",
     "test:ui": "npm run test --workspace apps/desktop"
   }
 }

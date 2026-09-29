@@ -39,9 +39,9 @@ jobs:
       - name: Bundle Python runtime
         run: uv run --extra asr --extra packaging python packaging/build_core.py
       - run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
-      - name: Build unsigned internal macOS app
+      - name: Build unsigned internal macOS DMG
         if: runner.os == 'macOS'
-        run: npm run desktop:build -- --bundles app
+        run: npm run desktop:build -- --bundles app,dmg
       - name: Build unsigned internal Windows installer
         if: runner.os == 'Windows'
         run: npm run desktop:build -- --bundles nsis

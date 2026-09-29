@@ -4,6 +4,20 @@
 
 目前為 **v0.1 開發版**：已實作 Tauri／React 桌面介面、Python 本機轉錄核心、SQLite 儲存、逐字稿校對與字幕匯出。macOS 本機已建置 `.app`；尚非完整 MVP，也尚未完成 Windows 實機與公開發行驗收。
 
+## macOS 安裝與啟動
+
+開啟 `Transcript Plus_0.1.0_aarch64.dmg`，將 `Transcript Plus.app` 拖入「應用程式」，再從「應用程式」啟動。此檔案適用於 Apple Silicon Mac。
+
+**請勿開啟 `build/core/transcript-core/transcript-core.pkg`**：它是 PyInstaller 的內部封裝資料，不是 macOS 安裝套件；交給系統安裝程式會出現 `com.apple.installer.pagecontroller error -1`。
+
+在 macOS 上建立包含最新轉錄核心與介面的 DMG（需先完成下方開發環境安裝）：
+
+```sh
+npm run desktop:package:mac
+```
+
+產物位於 `apps/desktop/src-tauri/target/release/bundle/dmg/`。若只需直接開啟程式，也可使用 `apps/desktop/src-tauri/target/release/bundle/macos/Transcript Plus.app`。目前為尚未完成 Developer ID 簽章與公證的本機測試版。
+
 ## 開發啟動
 
 需要 Node.js 22／24、Rust stable、Python 3.12、uv、FFmpeg／ffprobe。macOS 需要 Xcode Command Line Tools；Windows 需要 Visual Studio C++ Build Tools 與 WebView2。
