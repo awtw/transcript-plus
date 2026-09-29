@@ -1,0 +1,49 @@
+name: Desktop checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.9.4'
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install FFmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --yes --no-progress
+      - run: uv sync --python 3.12 --frozen --extra asr --extra packaging
+      - run: npm ci
+      - run: uv run --extra asr --extra packaging pytest -q
+      - run: npm run test:ui
+      - run: npm run build
+      - name: Bundle Python runtime
+        run: uv run --extra asr --extra packaging python packaging/build_core.py
+      - run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
+      - name: Build unsigned internal macOS app
+        if: runner.os == 'macOS'
+        run: npm run desktop:build -- --bundles app
+      - name: Build unsigned internal Windows installer
+        if: runner.os == 'Windows'
+        run: npm run desktop:build -- --bundles nsis
+
+      # No upload or release: code signing, notices and clean-machine acceptance are still pending.

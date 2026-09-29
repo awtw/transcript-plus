@@ -125,6 +125,11 @@ def split_cue(track, doc, cue_id, offset, manual_ms=None):
     require(index is not None, "NOT_FOUND", "找不到字幕。")
     cue = result["cues"][index]
     require(type(offset) is int and 0 < offset < len(cue["text"]), "INVALID_INPUT", "請在字幕中間選擇拆分位置。")
+    boundaries, count = set(), 0
+    for char in graphemes(cue["text"]):
+        count += len(char)
+        boundaries.add(count)
+    require(offset in boundaries, "INVALID_INPUT", "請勿從表情符號或組合字元中間拆分。")
     require(cue["text"][:offset].strip() and cue["text"][offset:].strip(), "INVALID_INPUT", "拆分後兩段都需要文字。")
     segment = next(s for s in doc["segments"] if s["id"] == cue["segment_id"])
     split_at = cue["char_start"] + offset
@@ -183,7 +188,9 @@ def caption_warnings(track, duration):
 
 
 def wrap_caption(text, max_chars):
-    chars = graphemes(text.strip())
+    # Empty subtitle lines terminate a cue in SRT/VTT. Normalize user-entered
+    # line breaks before the subtitle engine adds its own single wrap.
+    chars = graphemes(regex.sub(r"[\r\n]+", " ", text).strip())
     if len(chars) <= max_chars:
         return "".join(chars)
     # Do not silently drop text when it exceeds two lines: keep it and warn.

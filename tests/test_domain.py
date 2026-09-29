@@ -91,3 +91,18 @@ def test_manual_time_not_overwritten_by_split(document):
     track["cues"][0].update(start_ms=900, manual_override=True)
     with pytest.raises(AppError):
         domain.split_cue(track,document,track["cues"][0]["id"],4)
+
+
+def test_caption_linebreaks_cannot_create_phantom_srt_cues(document):
+    doc = domain.edit_segment(document,"segment-a","保留文字\n\n另一行")
+    project = {"transcript":doc,"captions":domain.make_captions(doc),"captions_stale":False}
+    rendered = domain.export_content(project,"srt")
+    assert "保留文字 另一行" in rendered
+    assert rendered.count(" --> ") == 1
+
+
+def test_split_rejects_inside_joined_emoji(document):
+    doc = domain.edit_segment(document,"segment-a","你好👨‍👩‍👧‍👦今天見")
+    track = domain.make_captions(doc)
+    with pytest.raises(AppError,match="組合字元"):
+        domain.split_cue(track,doc,track["cues"][0]["id"],4,2000)
