@@ -179,6 +179,7 @@ async fn rpc(app: tauri::AppHandle, method: String, params: Value) -> Result<Val
         "app.status",
         "project.list",
         "project.get",
+        "project.playback",
         "job.list",
         "job.start",
         "job.cancel",

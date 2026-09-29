@@ -104,3 +104,33 @@ def test_json_lines_keeps_stdout_machine_readable(tmp_path):
     assert responses[0]["result"] == []
     assert responses[1]["error"]["code"] == "PROTOCOL_VERSION"
     assert responses[2]["result"]["version"] == "0.1.0"
+
+
+def test_m4a_playback_copy_is_seekable_cached_and_preserves_original(tmp_path, service):
+    import shutil
+    if not shutil.which('ffmpeg'):
+        pytest.skip('需要 FFmpeg')
+    source = tmp_path / '錄音.m4a'
+    subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+                    '-c:a', 'aac', str(source)], check=True)
+    project = service.import_media(str(source))
+    assert not project['media_info']['has_video']
+    result = service.dispatch('project.playback', {'project_id': project['id']})
+    path = Path(result['media_path'])
+    with wave.open(str(path)) as audio:
+        assert audio.getframerate() == 16000 and audio.getnchannels() == 1
+        assert abs(audio.getnframes() / 16000 - 2) < .1
+        audio.setpos(16000)
+        assert audio.readframes(100)
+    original = Path(project['media_path'])
+    assert original.read_bytes() == source.read_bytes()
+    modified = path.stat().st_mtime_ns
+    assert service.dispatch('project.playback', {'project_id': project['id']}) == result
+    assert path.stat().st_mtime_ns == modified
+    path.write_bytes(b'broken')
+    service.dispatch('project.playback', {'project_id': project['id']})
+    with wave.open(str(path)) as audio:
+        assert audio.getnframes() > 0
+    original.write_bytes(b'changed')
+    with pytest.raises(AppError, match='原始錄音已變更'):
+        service.dispatch('project.playback', {'project_id': project['id']})

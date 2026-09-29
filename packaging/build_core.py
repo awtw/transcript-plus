@@ -1,5 +1,7 @@
 """Run with the project venv on the target OS. Produces a self-contained onedir core."""
 import os
+import importlib.util
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -16,6 +18,18 @@ def main():
                "--collect-all", "faster_whisper", "--collect-all", "ctranslate2", "--collect-all", "onnxruntime",
                "--collect-all", "tokenizers", "--collect-all", "av", "--collect-all", "regex",
                "--hidden-import", "transcript_plus.worker", "--hidden-import", "transcript_plus.service"]
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        # Pin the wheel's JACCL: dyld discovery may otherwise pick Homebrew's
+        # incompatible libjaccl.dylib when resolving MLX's @rpath dependency.
+        mlx_root = Path(next(iter(importlib.util.find_spec("mlx").submodule_search_locations)))
+        # Resource copying may dereference libmlx's root symlink. Keep the
+        # Metal kernels alongside both the root and nested library locations.
+        command.extend(["--add-data", f"{mlx_root / 'lib' / 'mlx.metallib'}{os.pathsep}."])
+        jaccl = mlx_root / "lib" / "libjaccl.dylib"
+        if jaccl.is_file():
+            command.extend(["--add-binary", f"{jaccl}{os.pathsep}."])
+        for package in ("mlx_whisper", "mlx", "tiktoken"):
+            command.extend(["--collect-all", package])
     for name in ("ffmpeg", "ffprobe"):
         binary = shutil.which(name)
         if not binary:

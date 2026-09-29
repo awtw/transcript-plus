@@ -9,7 +9,7 @@
 | 桌面外殼 | Tauri 2、React／TypeScript、原生選檔及匯出、單一實例、受限媒體 asset scope、Core 子程序及關閉流程。 |
 | 本機核心 | JSON Lines IPC；不開 HTTP API；SQLite WAL、單一資料目錄鎖、逐字稿歷史與版本衝突保護。 |
 | 影音 | 匯入 WAV／MP3／M4A／MP4／MOV 的可解碼音軌，檢查時長／大小／容量，保存原檔副本與 SHA-256。 |
-| 轉錄 | faster-whisper CPU INT8、本機模型 hash 驗證、VAD、詞時間、離線環境設定、原始文字保留。 |
+| 轉錄 | faster-whisper CPU INT8／Apple Silicon MLX、本機模型 hash 驗證、品質模式（延續前文、VAD 關閉）、選用詞時間、離線環境設定、原始文字保留。 |
 | 工作 | 持久化排隊、子程序隔離、進度、取消、重試、開機恢復中斷狀態、重用已校驗的 PCM 前處理產物。 |
 | 校對 | 點段落跳播、播放倍速、全文篩選、虛擬清單、800 ms 防抖自動儲存、手動講者、當次編輯復原／重做。 |
 | 字幕 | 詞界／停頓／標點切分、同段字幕拆合、手動時間、品質警示、失效版本處理。 |
@@ -46,7 +46,7 @@ CI 使用 `macos-15` 與 `windows-2022`，僅 build／test，不上傳或發布�
 
 1. 講者分離與本機 LLM 尚未接入；UI 已明示。下個功能里程碑建立匿名 diarization adapter，再接摘要引用／待辦與過期處理。
 2. 模型目前選擇外部本機資料夾，記錄 hash，不會複製、下載或管理授權 manifest。下一步建立可搬移的模型包、版本及空間管理。
-3. 播放使用系統 WebView；不支援編碼會顯示錯誤，尚未產生代理檔。音軌相對容器起點偏移 ≥100 ms 暫時拒絕匯入，避免錯誤時間碼。
+3. 播放使用系統 WebView；M4A 或不支援編碼可按「建立相容音訊供播放」，生成 16 kHz 單聲道 PCM WAV，保留原檔；播放副本會驗證來源與快取校驗碼。封面圖片不再視為影片。音軌相對容器起點偏移 ≥100 ms 暫時拒絕匯入，避免錯誤時間碼。
 4. 首版字幕文字從逐字稿修正；字幕頁先提供拆合與時間，不提供獨立文字副本。合併限制同一逐字稿段落；跨段／跨講者合併待設計。
 5. 字詞跳播與字幕疊圖預覽尚未接入；目前可點片段／字幕跳播。
 6. 工作重試目前重用前處理音訊；尚無 ASR 中途 checkpoint，未完成 ASR 仍需重跑。POSIX worker 有父程序監視，Windows Job Object 已寫入但未實機驗證。
@@ -67,3 +67,32 @@ uv run --extra asr python scripts/smoke_asr.py \
 ```
 
 腳本只讀指定模型、複製指定影音至測試資料目錄，並在該目錄產生匯出檔。請勿以機密企業錄音取代可公開的測試素材。
+
+## 台灣語音與 M4A 修正（2026-09-29）
+
+- 發現桌面設定仍使用首次接線驗證的 faster-whisper-tiny；新增 MLX 模型辨識及引擎選擇，可直接使用 FABO 的 Breeze ASR 25 模型資料夾。Windows／Intel Mac 仍使用 CTranslate2，不會自動下載或退回小模型。
+- 新工作預設 auto 語言、temperature 0、transcribe、延續前文，VAD 與詞時間關閉，對齊 FABO quality。可勾選詞級時間供字幕細分；關閉時僅用實際段落時間，不虛構詞對齊。工作和 JSON 匯出保存推論參數。
+- MLX 以 faster-whisper 的 PyAV decoder 讀取原始錄音，與 FABO 使用相同取樣流程。UI 的逐字稿時間以毫秒表示，超過容器長度的末段時間會限制在專案範圍。
+- 使用使用者已匯入錄音的 30 秒片段、本機 Breeze ASR 25 MLX，與 FABO 的 resolve_parameters quality／transcribe 實際比對：11 段文字（去除頭尾空白）全部一致；無人工真值，這不是準確率評估，也不是整段約 95 分鐘的驗收。原始專案及逐字稿未重跑。
+- 修正後 32 項 Python 測試與 7 項前端測試通過，TypeScript／Vite 建置通過。新增測試涵蓋 CT2／MLX 解碼參數、模型校驗、工作參數快照、真實 AAC M4A 匯入、PCM 跳讀、播放快取重用與毀損重建，以及前端從 M4A 切換播放副本。
+
+- 最終 PyInstaller 核心在 PATH=/usr/bin:/bin 下成功以 Breeze ASR 25 MLX 轉錄，同樣 11 段文字與 FABO 一致；M4A 播放副本建立成功。打包明確使用 MLX wheel 的 libjaccl，避免混入 Homebrew 的不相容版本。
+- 最終 macOS .app 建置成功並重新開啟；使用者設定已由 tiny 切換 Breeze ASR 25 MLX，舊模型設定另存於忽略的本機測試目錄。於實際 95:34 M4A 專案建立播放副本，原生播放器顯示完整時長、播放計時前進，點 00:21 段落可跳播；驗證後已暫停。原始逐字稿仍為版本 1，未自動重跑整份錄音。
+
+## 最終 .app 的 MLX 載入修正
+
+使用者回報「尚未安裝所選模型的本機轉錄引擎」後，worker.log 顯示真正原因是找不到 default metallib。前輪只在 PyInstaller dist 中驗證推論，雖然最終 .app 的播放通過，未涵蓋最終資源複製後的模型載入。資源複製將根目錄的 libmlx 符號連結解參照，使 Metal shader 不再與實際載入的函式庫相鄰。
+
+封裝現在將 wheel 的 mlx.metallib 同時放在根目錄與 mlx/lib，適應最終 .app 的複製布局；原生函式庫載入錯誤改回報 RUNTIME_LOAD_FAILED，避免誤稱引擎未安裝。入口呼叫 multiprocessing.freeze_support，避免 resource tracker 子程序被一般 CLI parser 誤判。
+
+新增 scripts/smoke_packaged.py，必須將 --core 指向最終 .app/Contents/Resources/core/transcript-core，使用獨立 --data-dir、短語音 --audio 與本機 --model；以系統 PATH、不同工作目錄驗證匯入、播放副本與實際轉錄。
+
+修正後驗證：33 項 Python 測試通過；最終 .app 內的核心在隔離工作目錄及系統 PATH 下成功完成 30 秒 M4A 的 MLX 轉錄（11 段）與播放副本建立，worker.log 為空。已重新開啟新版並從 UI 重試使用者新匯入、先前因 metallib 載入失敗的 95 分鐘工作；此處僅記錄已啟動，不代表全長轉錄驗收完成。
+
+## MLX 中途進度回報
+
+MLX 的 transcribe 原先整份完成才回傳 segments，造成 UI 一直顯示 00:00。新增工作子程序限定的進度轉接器，觀察 mlx-whisper 0.4.x 的影格更新，即使 verbose=None 關閉 tqdm 顯示也會透過 JSONL 回報；不分割原音訊、不修改解碼與前文設定，退出或例外均還原模組狀態。引擎略過靜音時未必逐段回報，進度可能停頓後跳動，不能視為線性剩餘時間估計。
+
+模型驗證／載入、ASR、結果儲存分別呈現，推論完成後整理段落不再讓進度倒退。UI 顯示處理時間、百分比與已執行時間；第一段完成前明示等待原因，未完成的工作不宣稱 100%。scripts/smoke_packaged.py 新增 --require-progress，使用 60–90 秒短檔檢查最終 .app 在 running/asr 階段已有非零進度。
+
+本次 35 項 Python 與 10 項 UI 測試、前端建置通過。30 秒實際錄音的回報為 0、28700、30010 毫秒（工作層限制至檔案時長），辨識文字仍與 FABO 比對基準相同。原先重試的 95:34 錄音已完成，耗時約 14 分 53 秒，逐字稿已儲存，worker.log 無錯誤。

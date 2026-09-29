@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 
+from .asr import parameters
 from .domain import make_captions, uid, validate_document
 from .errors import AppError, require
 from .media import atomic_json, file_hash, process_options
@@ -26,8 +27,9 @@ class JobRunner:
         self.store.recover()
         self.thread.start()
 
-    def enqueue(self, project_id, language="zh", retry_of=None):
+    def enqueue(self, project_id, language="", retry_of=None, word_timestamps=False):
         require(language in ("", "zh", "en"), "INVALID_INPUT", "不支援的語言設定。")
+        require(type(word_timestamps) is bool, "INVALID_INPUT", "詞時間設定必須為布林值。")
         project = self.store.project(project_id)
         model = self.store.setting("asr_model")
         require(model and Path(model["path"]).is_dir(), "MODEL_MISSING", "請先在模型設定選擇本機模型。")
@@ -41,7 +43,7 @@ class JobRunner:
             job_id = uid()
             db.execute("""INSERT INTO jobs(id,project_id,status,stage,attempt,input_revision,parameters,created)
                 VALUES (?,?,'queued','queued',?,?,?,?)""", (job_id, project_id, attempt, project["revision"],
-                json.dumps({"language": language, "model": model}), time.time()))
+                json.dumps({"language": language, "model": model, "asr_parameters": parameters(model.get("engine", "faster-whisper"), language, word_timestamps)}), time.time()))
         self.wake.set()
         return {"job_id": job_id}
 

@@ -7,7 +7,7 @@ import time
 from . import __version__, domain, models
 from .errors import AppError, require
 from .jobs import JobRunner
-from .media import file_hash, probe
+from .media import file_hash, probe, prepare_playback
 from .storage import Store
 
 
@@ -28,6 +28,8 @@ class Service:
             return self.store.projects()
         if method == "project.get":
             return self.get_project(p["project_id"])
+        if method == "project.playback":
+            return prepare_playback(self.store, p["project_id"])
         if method == "project.import":
             return self.import_media(p["path"])
         if method == "model.configure":
@@ -37,14 +39,15 @@ class Service:
         if method == "job.list":
             return self.store.jobs()
         if method == "job.start":
-            return self.runner.enqueue(p["project_id"], p.get("language", "zh"))
+            return self.runner.enqueue(p["project_id"], p.get("language", ""), word_timestamps=p.get("word_timestamps", False))
         if method == "job.cancel":
             return self.runner.cancel(p["job_id"])
         if method == "job.retry":
             with self.store.connection() as db:
                 old = db.execute("SELECT * FROM jobs WHERE id=?", (p["job_id"],)).fetchone()
             require(old, "NOT_FOUND", "找不到工作。")
-            return self.runner.enqueue(old["project_id"], json.loads(old["parameters"])["language"], old["id"])
+            return self.runner.enqueue(old["project_id"], json.loads(old["parameters"])["language"], old["id"],
+                                       json.loads(old["parameters"]).get("asr_parameters", {}).get("word_timestamps", False))
         if method == "transcript.edit":
             project = self.store.project(p["project_id"])
             require(project["transcript"], "NOT_READY", "請先完成轉錄。")

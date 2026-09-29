@@ -71,7 +71,7 @@ export interface Job {
 export interface ModelStatus {
   available: boolean;
   runtime_available: boolean;
-  model: { name: string; path: string; size_bytes: number } | null;
+  model: { name: string; path: string; size_bytes: number; engine: string } | null;
   diarization_available: boolean;
   summary_available: boolean;
 }

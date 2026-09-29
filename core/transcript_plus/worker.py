@@ -38,39 +38,42 @@ def execute(task):
         require(result.returncode == 0, "UNSUPPORTED_CODEC", "音訊解碼失敗，原檔與先前結果仍保留。")
         partial.replace(audio)
         atomic_json(marker, {"binding": binding, "sha256": file_hash(audio)})
-    emit(stage="asr", processed_ms=0)
-    try:
-        from faster_whisper import WhisperModel
-    except ImportError:
-        raise AppError("RUNTIME_MISSING", "尚未安裝本機轉錄引擎。") from None
+    emit(stage="model_loading", processed_ms=None)
     model_info = task["model"]
     for name, expected in model_info["files"].items():
         path = Path(model_info["path"]) / name
         require(path.is_file() and file_hash(path) == expected, "MODEL_CORRUPT", "模型檔案已變更或毀損，請重新選擇模型。")
-    model = WhisperModel(model_info["path"], device="cpu", compute_type="int8", cpu_threads=min(4, os.cpu_count() or 1),
-                         local_files_only=True)
-    output, info = model.transcribe(str(audio), language=task.get("language") or None,
-                                    beam_size=5, vad_filter=True, word_timestamps=True,
-                                    condition_on_previous_text=False)
+    from .asr import parameters, transcribe
+    engine = model_info.get("engine", "faster-whisper")
+    settings = task.get("asr_parameters") or parameters(engine, task.get("language", ""))
+    duration = task["duration_ms"]
+    def progress(milliseconds):
+        emit(stage="asr", processed_ms=min(duration, max(0, milliseconds)))
+    output, language = transcribe(task["media_path"] if engine == "mlx" else audio, model_info, settings,
+                                 progress=progress)
+    if engine == "mlx":
+        emit(stage="saving", processed_ms=duration)
     segments, duration = [], task["duration_ms"]
     for source in output:
-        start, end = max(0, round(source.start*1000)), min(duration, round(source.end*1000))
-        if end <= start or not source.text.strip():
+        start, end = max(0, round(source["start"]*1000)), min(duration, round(source["end"]*1000))
+        if end <= start or not source["text"].strip():
             continue
         words, previous = [], start
-        for word in source.words or []:
-            a, b = round(word.start*1000), round(word.end*1000)
+        for word in source.get("words", []) or []:
+            a, b = round(word["start"]*1000), round(word["end"]*1000)
             if previous <= a < b <= end:
-                words.append({"id": uid(), "text": word.word, "start_ms": a, "end_ms": b,
-                              "confidence": word.probability})
+                words.append({"id": uid(), "text": word["word"], "start_ms": a, "end_ms": b,
+                              "confidence": word.get("probability")})
                 previous = b
-        complete = bool(words) and lexical("".join(w["text"] for w in words)) == lexical(source.text)
-        segments.append({"id": uid(), "start_ms": start, "end_ms": end, "text": source.text.strip(),
-                         "raw_text": source.text.strip(), "speaker": "", "words": words,
+        complete = bool(words) and lexical("".join(w["text"] for w in words)) == lexical(source["text"])
+        segments.append({"id": uid(), "start_ms": start, "end_ms": end, "text": source["text"].strip(),
+                         "raw_text": source["text"].strip(), "speaker": "", "words": words,
                          "alignment_status": "valid" if complete else "incomplete"})
-        emit(stage="asr", processed_ms=end)
-    doc = {"schema_version": 1, "duration_ms": duration, "language": info.language,
-           "model_hash": model_info["model_hash"], "engine": "faster-whisper", "segments": segments}
+        if engine != "mlx":
+            progress(end)
+    doc = {"schema_version": 1, "duration_ms": duration, "language": language,
+           "model_hash": model_info["model_hash"], "engine": engine, "asr_parameters": settings, "segments": segments}
+    emit(stage="saving", processed_ms=duration)
     validate_document(doc)
     atomic_json(root / f'result-{task["job_id"]}.json', doc)
     emit(stage="complete", processed_ms=duration)

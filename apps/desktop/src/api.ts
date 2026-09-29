@@ -48,7 +48,9 @@ export function message(error: unknown): string {
 export const stages: Record<string, string> = {
   queued: "等待處理",
   preprocess: "準備音訊",
+  model_loading: "正在載入模型",
   asr: "正在轉錄",
+  saving: "正在儲存逐字稿",
   complete: "轉錄完成",
   no_speech: "未偵測到語音",
 };

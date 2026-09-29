@@ -54,11 +54,14 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
   const [projectSearch, setProjectSearch] = useState("");
-  const [language, setLanguage] = useState("zh");
+  const [language, setLanguage] = useState("");
   const [saveState, setSaveState] = useState("已儲存");
   const [editing, setEditing] = useState<string | null>(null);
   const [position, setPosition] = useState(0);
   const [playError, setPlayError] = useState(false);
+  const [playback, setPlayback] = useState<{ projectId: string; path: string } | null>(null);
+  const [wordTimestamps, setWordTimestamps] = useState(false);
+  const playbackPath = playback?.projectId === project?.id ? playback?.path : undefined;
   const [format, setFormat] = useState("srt");
   const [split, setSplit] = useState<Cue | null>(null);
   const [undo, setUndo] = useState<number[]>([]);
@@ -720,15 +723,17 @@ export default function App() {
                     <FileAudio size={15} />
                   </div>
                   <div
-                    className={`media-preview ${project.media_info.has_video ? "video" : ""}`}
+                    className={`media-preview ${project.media_info.has_video && !playbackPath && !/\.m4a$/i.test(project.filename) ? "video" : ""}`}
                   >
-                    {project.media_info.has_video ? (
+                    {project.media_info.has_video && !playbackPath && !/\.m4a$/i.test(project.filename) ? (
                       <video
                         ref={(el) => {
                           player.current = el;
                         }}
                         key={project.id}
-                        src={api.media(project.media_path)}
+                        src={api.media(playbackPath ?? project.media_path)}
+                        preload="metadata"
+                        onLoadedMetadata={() => setPlayError(false)}
                         controls
                         onTimeUpdate={(e) =>
                           setPosition(e.currentTarget.currentTime * 1000)
@@ -749,7 +754,9 @@ export default function App() {
                             player.current = el;
                           }}
                           key={project.id}
-                          src={api.media(project.media_path)}
+                          src={api.media(playbackPath ?? project.media_path)}
+                        preload="metadata"
+                        onLoadedMetadata={() => setPlayError(false)}
                           controls
                           onTimeUpdate={(e) =>
                             setPosition(e.currentTarget.currentTime * 1000)
@@ -761,8 +768,22 @@ export default function App() {
                   </div>
                   {playError && (
                     <div className="inline-warning">
-                      系統播放器不支援此影音編碼；轉錄仍可執行，目前尚未提供播放代理檔。
+                      原始編碼無法播放，可建立相容的音訊副本後核對內容。
                     </div>
+                  )}
+                  {playbackPath && <p className="footnote">目前播放相容 WAV 副本，原始錄音仍保留。</p>}
+                  {(playError || /\.m4a$/i.test(project.filename)) && (
+                    <button className="secondary full" disabled={busy} onClick={() =>
+                      act(async () => {
+                        const id = project.id;
+                        const result = await rpc<{ media_path: string }>("project.playback", { project_id: id });
+                        if (projectRef.current?.id === id) {
+                          setPlayback({ projectId: id, path: result.media_path });
+                          setPlayError(false);
+                          setPosition(0);
+                        }
+                      })
+                    }>{busy ? "正在準備…" : "建立相容音訊供播放"}</button>
                   )}
                   <div className="playback-options">
                     <span>
@@ -797,6 +818,12 @@ export default function App() {
                       <option value="en">英文</option>
                       <option value="">自動偵測</option>
                     </select>
+                  </label>
+                  <p className="footnote">品質模式：延續前文、不切除靜音。台灣華語建議使用 Breeze ASR 25；台語可另選 Breeze ASR 26。</p>
+                  <label className="field-label">
+                    <span><input type="checkbox" checked={wordTimestamps} disabled={!!working}
+                      onChange={(e) => setWordTimestamps(e.target.checked)} /> 產生詞級時間（字幕細分）</span>
+                    <small>預設關閉，與 FABO 品質模式一致；關閉時保留整段時間，拆句需手動核對。</small>
                   </label>
                   <div className="model-line">
                     <span
@@ -839,6 +866,7 @@ export default function App() {
                             await rpc("job.start", {
                               project_id: project.id,
                               language,
+                              word_timestamps: wordTimestamps,
                             });
                           });
                         if (project.transcript)
@@ -868,25 +896,7 @@ export default function App() {
                     <strong>
                       {stages[activeJob.stage] ?? activeJob.stage}
                     </strong>
-                    {working && (
-                      <>
-                        <div className="progress">
-                          <i
-                            style={{
-                              width:
-                                activeJob.processed_ms == null
-                                  ? "20%"
-                                  : `${Math.max(2, Math.min(100, (activeJob.processed_ms / project.duration_ms) * 100))}%`,
-                            }}
-                          />
-                        </div>
-                        <small>
-                          {activeJob.processed_ms == null
-                            ? "正在準備，進度尚無法估計"
-                            : `已處理 ${time(activeJob.processed_ms)} / ${time(project.duration_ms)}`}
-                        </small>
-                      </>
-                    )}
+                    {working && <JobProgress job={activeJob} duration={project.duration_ms} />}
                     {activeJob.error && (
                       <p className="danger">{activeJob.error}</p>
                     )}
@@ -940,12 +950,11 @@ export default function App() {
               <HardDrive size={32} />
               <div>
                 <strong>離線語音辨識</strong>
-                <span>faster-whisper · CPU INT8</span>
+                <span>{status?.models.model?.engine === "mlx" ? "MLX · Apple Metal GPU" : "faster-whisper · CPU INT8"}</span>
               </div>
             </div>
             <p>
-              選擇已準備好的 CTranslate2
-              模型資料夾。此開發版不會自動下載模型，也不會把錄音傳至雲端。
+              選擇已準備好的 Breeze ASR／Whisper 模型資料夾（CTranslate2 或 Apple Silicon 的 MLX）。可直接選取 fabo-asr 使用的同一個模型資料夾。此開發版不會自動下載模型，也不會把錄音傳至雲端。
             </p>
             <div className="settings-facts">
               <span>轉錄引擎</span>
@@ -984,7 +993,7 @@ export default function App() {
             </button>
             <p className="footnote">
               需包含
-              model.bin、config.json、tokenizer.json。模型檔案會先計算校驗碼，大型模型可能需要一些時間。
+              CTranslate2：model.bin、config.json、tokenizer.json；MLX：config.json 與 weights.safetensors 或 weights.npz。模型越小可能越容易誤辨，程式不會自動替換模型。驗證大型模型需要一些時間。
             </p>
           </section>
         </div>
@@ -1478,4 +1487,25 @@ function SplitDialog({
       </section>
     </div>
   );
+}
+
+
+export function JobProgress({ job, duration }: { job: Job; duration: number }) {
+  const known = job.stage === "asr" && job.processed_ms != null;
+  const percent = known ? Math.min(99, Math.max(0, Math.floor(job.processed_ms! / duration * 100))) : undefined;
+  const elapsed = job.started == null ? null : Math.max(0, Date.now() - job.started * 1000);
+  const detail = job.stage === "saving" ? "音訊辨識完成，正在整理並儲存結果"
+    : job.stage === "model_loading" ? "正在驗證及載入本機模型，尚未開始辨識"
+    : known && job.processed_ms! > 0 ? `已處理 ${time(job.processed_ms!)} / ${time(duration)}（${percent}%）`
+    : known ? "正在辨識第一段音訊，完成後會更新進度"
+    : "正在準備音訊，進度尚無法估計";
+  return <>
+    <div className="progress" role="progressbar" aria-label="轉錄進度"
+      aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-valuetext={detail}>
+      <i style={{ width: percent == null ? "20%" : `${percent}%` }} />
+    </div>
+    <small>{detail}</small>
+    {elapsed != null && <small>已執行 {time(elapsed)}</small>}
+    {known && <small>每段辨識完成後更新；靜音略過或較難辨識時，進度可能暫停或跳動。</small>}
+  </>;
 }
