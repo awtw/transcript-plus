@@ -1,0 +1,14 @@
+{
+  "name": "transcript-plus",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/desktop"],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/desktop",
+    "build": "npm run build --workspace apps/desktop",
+    "desktop": "npm run tauri --workspace apps/desktop -- dev",
+    "desktop:build": "npm run tauri --workspace apps/desktop -- build",
+    "test:ui": "npm run test --workspace apps/desktop"
+  }
+}

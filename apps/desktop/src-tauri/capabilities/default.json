@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "Local UI; file access and process execution remain in Rust.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
