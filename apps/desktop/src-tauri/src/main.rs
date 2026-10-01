@@ -15,6 +15,18 @@ use std::{
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+/// Windows canonicalize() yields `\\?\` paths that CTranslate2 and ONNX Runtime cannot open.
+fn plain_path(path: PathBuf) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path,
+    }
+}
+
 struct Core {
     io: Mutex<Option<(ChildStdin, mpsc::Receiver<Value>)>>,
     child: Mutex<Child>,
@@ -108,16 +120,19 @@ impl Core {
     fn request(&self, method: &str, params: Value) -> Result<Value, String> {
         let id = self.counter.fetch_add(1, Ordering::Relaxed);
         let mut io = self.io.lock().map_err(|_| "核心通訊已中斷")?;
-        let (stdin, receiver) = io.as_mut().ok_or("核心已停止，請重新啟動")?;
+        let (stdin, receiver) = io.as_mut().ok_or_else(|| self.stopped_message())?;
         let message = json!({"protocol_version":1,"request_id":id,"method":method,"params":params});
         writeln!(stdin, "{}", message)
             .and_then(|_| stdin.flush())
-            .map_err(|_| "核心已停止，請重新啟動")?;
+            .map_err(|_| self.stopped_message())?;
         // Imports and model integrity checks may scan several GB; UI remains responsive.
         loop {
             let response = receiver
                 .recv_timeout(Duration::from_secs(180))
-                .map_err(|_| "核心未回應，請重新啟動")?;
+                .map_err(|error| match error {
+                    mpsc::RecvTimeoutError::Timeout => "核心逾時未回應，請稍後重試或重新啟動".to_string(),
+                    mpsc::RecvTimeoutError::Disconnected => self.stopped_message(),
+                })?;
             if response.get("request_id").and_then(Value::as_u64) != Some(id) {
                 continue;
             }
@@ -132,6 +147,20 @@ impl Core {
                 .get("result")
                 .cloned()
                 .ok_or_else(|| "核心回應格式錯誤".into());
+        }
+    }
+
+    /// Say why the core is gone (exit code, log location) instead of a generic failure.
+    fn stopped_message(&self) -> String {
+        let code = self
+            .child
+            .lock()
+            .ok()
+            .and_then(|mut child| child.try_wait().ok().flatten())
+            .and_then(|status| status.code());
+        match code {
+            Some(code) => format!("轉錄核心已結束（代碼 {code}），請重新啟動；詳細原因見 {}", self.root.join("logs/core.log").display()),
+            None => "核心通訊已中斷，請重新啟動".to_string(),
         }
     }
 
@@ -190,6 +219,17 @@ async fn rpc(app: tauri::AppHandle, method: String, params: Value) -> Result<Val
         "caption.split",
         "caption.merge",
         "caption.time",
+        "glossary.set",
+        "speaker.analyze",
+        "speaker.rename_group",
+        "speaker.assign",
+        "speaker.merge",
+        "speaker.rematch",
+        "voiceprint.list",
+        "voiceprint.register",
+        "voiceprint.rename",
+        "voiceprint.delete",
+        "voiceprint.enable",
     ];
     if !ALLOWED.contains(&method.as_str()) {
         return Err("不允許的操作".into());
@@ -249,9 +289,37 @@ async fn choose_model(app: tauri::AppHandle) -> Result<Option<Value>, String> {
             .into_path()
             .map_err(|e| e.to_string())?
             .canonicalize()
+            .map(plain_path)
             .map_err(|e| e.to_string())?;
         app.state::<Core>()
             .request("model.configure", json!({"path":path}))
+            .map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn choose_speaker_models(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let window = app.get_webview_window("main").ok_or("找不到主視窗")?;
+        let Some(file) = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("選擇講者模型資料夾（含 segmentation 與 nemo_en_titanet_small.onnx）")
+            .blocking_pick_folder()
+        else {
+            return Ok(None);
+        };
+        let path = file
+            .into_path()
+            .map_err(|e| e.to_string())?
+            .canonicalize()
+            .map(plain_path)
+            .map_err(|e| e.to_string())?;
+        app.state::<Core>()
+            .request("model.configure_speakers", json!({"path":path}))
             .map(Some)
     })
     .await
@@ -425,6 +493,7 @@ fn main() {
             rpc,
             import_media,
             choose_model,
+            choose_speaker_models,
             export_file,
             set_dirty
         ])

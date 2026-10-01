@@ -26,5 +26,5 @@ it("舊 M4A 專案即使被標為影片，也能使用音訊控制並切換相�
   await waitFor(() => expect(container.querySelector("audio")?.getAttribute("src")).toBe("/projects/p1/playback/audio.wav"));
   expect(rpc).toHaveBeenCalledWith("project.playback", { project_id: "p1" });
   expect((screen.getByLabelText("語音語言") as HTMLSelectElement).value).toBe("");
-  expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+  expect((screen.getByRole("checkbox", { name: "產生詞級時間" }) as HTMLInputElement).checked).toBe(false);
 });

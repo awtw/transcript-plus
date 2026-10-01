@@ -1298,3 +1298,71 @@ button svg {
     font-size: 9px;
   }
 }
+
+/* Speaker groups */
+.group-select {
+  font-size: 11px;
+  max-width: 120px;
+  margin-left: 6px;
+  padding: 1px 4px;
+  border: 1px solid #dfe6d8;
+  border-radius: 5px;
+  background: #fff;
+  color: inherit;
+}
+.speakers-panel {
+  overflow: auto;
+  flex: 1;
+  padding: 0 18px 18px;
+}
+.speakers-panel .count-input {
+  width: 96px;
+  margin-left: auto;
+  padding: 6px 8px;
+  border: 1px solid #dfe6d8;
+  border-radius: 7px;
+}
+.speaker-card {
+  border: 1px solid #e3eadc;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-top: 10px;
+  background: #fff;
+}
+.speaker-card-head,
+.speaker-card-actions,
+.register-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.speaker-card-head input {
+  font-weight: 600;
+  min-width: 140px;
+  padding: 5px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+}
+.speaker-card-head input:hover,
+.speaker-card-head input:focus {
+  border-color: #cfdac5;
+  background: #fff;
+}
+.speaker-card-actions,
+.register-form {
+  margin-top: 10px;
+}
+.speaker-card-actions select,
+.register-form select,
+.register-form input {
+  padding: 6px 8px;
+  border: 1px solid #dfe6d8;
+  border-radius: 7px;
+  background: #fff;
+}
+.people-heading {
+  margin: 22px 0 4px;
+  font-size: 13px;
+}

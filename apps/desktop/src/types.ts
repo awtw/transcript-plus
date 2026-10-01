@@ -14,6 +14,10 @@ export interface Segment {
   speaker: string;
   words: Word[];
   alignment_status: "valid" | "dirty" | "incomplete";
+  speaker_group?: string | null;
+  speaker_source?: "model" | "manual";
+  needs_confirmation?: boolean;
+  review_reasons?: string[];
 }
 export interface Transcript {
   schema_version: number;
@@ -48,7 +52,35 @@ export interface ProjectSummary {
   updated: number;
   has_transcript: boolean;
 }
+export interface SpeakerGroup {
+  label: string;
+  name: string;
+  name_source: "auto" | "voiceprint" | "manual";
+  seconds: number;
+  segments: number;
+  match_reason: string | null;
+  similarity: number | null;
+  excerpt_count: number;
+  speaker_id: string | null;
+}
+export interface SpeakerSummary {
+  groups: SpeakerGroup[];
+  needs_review: number;
+  created: number;
+  speaker_count: number | null;
+  observed: number;
+  ignored_groups: number;
+}
+export interface Person {
+  id: string;
+  name: string;
+  samples: number;
+  enabled: boolean;
+  seconds: number;
+  created: number;
+}
 export interface Project extends ProjectSummary {
+  speaker_summary: SpeakerSummary | null;
   transcript: Transcript | null;
   captions: Track | null;
   captions_stale: boolean;
@@ -72,6 +104,7 @@ export interface ModelStatus {
   available: boolean;
   runtime_available: boolean;
   model: { name: string; path: string; size_bytes: number; engine: string } | null;
+  speaker_model: { name: string } | null;
   diarization_available: boolean;
   summary_available: boolean;
 }
@@ -79,4 +112,12 @@ export interface AppStatus {
   version: string;
   data_dir: string;
   models: ModelStatus;
+  glossary: string;
+  hardware: {
+    cores: number;
+    memory_gb: number;
+    cuda: boolean;
+    apple_silicon: boolean;
+    concurrent_stages: boolean;
+  };
 }

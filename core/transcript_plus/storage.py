@@ -16,7 +16,7 @@ class Store:
         with self.connection() as db:
             db.execute("PRAGMA journal_mode=WAL")
             version = db.execute("PRAGMA user_version").fetchone()[0]
-            require(version <= 1, "DATABASE_VERSION", "資料庫版本較新，請使用新版程式。")
+            require(version <= 2, "DATABASE_VERSION", "資料庫版本較新，請使用新版程式。")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS projects(
                     id TEXT PRIMARY KEY, title TEXT NOT NULL, filename TEXT NOT NULL,
@@ -37,8 +37,16 @@ class Store:
                     transcript TEXT NOT NULL, created REAL NOT NULL,
                     PRIMARY KEY(project_id,revision));
                 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                PRAGMA user_version=1;
+                CREATE TABLE IF NOT EXISTS people(
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, created REAL NOT NULL);
+                CREATE TABLE IF NOT EXISTS voiceprints(
+                    id TEXT PRIMARY KEY, person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+                    embedding TEXT NOT NULL, quality TEXT NOT NULL, model_hash TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1, project_id TEXT, speaker_group TEXT, created REAL NOT NULL);
             """)
+            if "speakers" not in {row[1] for row in db.execute("PRAGMA table_info(projects)")}:
+                db.execute("ALTER TABLE projects ADD COLUMN speakers TEXT")
+            db.execute("PRAGMA user_version=2")
 
     @contextmanager
     def connection(self):
@@ -66,10 +74,15 @@ class Store:
             row = db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
         require(row is not None, "NOT_FOUND", "找不到專案。")
         value = dict(row)
-        for key in ("transcript", "captions", "media_info"):
+        for key in ("transcript", "captions", "media_info", "speakers"):
             value[key] = json.loads(value[key]) if value[key] else None
         value["captions_stale"] = bool(value["captions_stale"])
         return value
+
+    def project_speakers(self, project_id):
+        with self.connection() as db:
+            row = db.execute("SELECT speakers FROM projects WHERE id=?", (project_id,)).fetchone()
+        return json.loads(row[0]) if row and row[0] else None
 
     def projects(self):
         with self.connection() as db:
@@ -92,16 +105,35 @@ class Store:
         with self.connection() as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES (?,?)", (key, json.dumps(value, ensure_ascii=False)))
 
-    def save_transcript(self, project_id, expected_revision, doc, db=None):
+    def save_transcript(self, project_id, expected_revision, doc, db=None, speakers=None, keep_captions=False):
+        """keep_captions: speaker-only changes do not alter caption text or timing."""
         if db is None:
             with self.connection() as connection:
-                return self.save_transcript(project_id, expected_revision, doc, connection)
+                return self.save_transcript(project_id, expected_revision, doc, connection, speakers, keep_captions)
         encoded = json.dumps(doc, ensure_ascii=False)
-        changed = db.execute("""UPDATE projects SET transcript=?,revision=revision+1,
-            captions_stale=CASE WHEN captions IS NULL THEN 0 ELSE 1 END,updated=?
+        stale = "captions_stale" if keep_captions else "CASE WHEN captions IS NULL THEN 0 ELSE 1 END"
+        changed = db.execute(f"""UPDATE projects SET transcript=?,revision=revision+1,
+            captions_stale={stale},updated=?
             WHERE id=? AND revision=?""", (encoded, time.time(), project_id, expected_revision)).rowcount
         require(changed == 1, "REVISION_CONFLICT", "內容已更新，請重新載入；您的草稿仍保留。")
+        if speakers is not None:
+            db.execute("UPDATE projects SET speakers=? WHERE id=?", (json.dumps(speakers, ensure_ascii=False), project_id))
         db.execute("INSERT INTO history VALUES (?,?,?,?)", (project_id, expected_revision+1, encoded, time.time()))
+
+    def voiceprints(self, enabled_only=False):
+        """Rows with the person's name; embeddings parsed for matching."""
+        with self.connection() as db:
+            rows = db.execute("""SELECT v.*, p.name FROM voiceprints v JOIN people p ON p.id=v.person_id
+                ORDER BY v.created""").fetchall()
+        result = []
+        for row in rows:
+            value = dict(row)
+            if enabled_only and not value["enabled"]:
+                continue
+            value["embedding"], value["quality"] = json.loads(value["embedding"]), json.loads(value["quality"])
+            value["enabled"] = bool(value["enabled"])
+            result.append(value)
+        return result
 
     def save_captions(self, project_id, expected_revision, track, expected_track=None):
         with self.connection() as db:

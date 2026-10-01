@@ -27,18 +27,21 @@ import {
   ArrowRight,
   HardDrive,
   Mic2,
+  Users,
 } from "lucide-react";
 import { api, desktop, message, rpc, stages, statuses, time } from "./api";
 import type {
   AppStatus,
   Cue,
   Job,
+  Person,
   Project,
   ProjectSummary,
   Segment,
+  SpeakerGroup,
 } from "./types";
 
-type Tab = "transcript" | "captions" | "summary";
+type Tab = "transcript" | "captions" | "speakers" | "summary";
 const noop = () => {};
 
 export default function App() {
@@ -61,6 +64,11 @@ export default function App() {
   const [playError, setPlayError] = useState(false);
   const [playback, setPlayback] = useState<{ projectId: string; path: string } | null>(null);
   const [wordTimestamps, setWordTimestamps] = useState(false);
+  const [profile, setProfile] = useState("quality");
+  const [diarize, setDiarize] = useState(true);
+  const [speakerCount, setSpeakerCount] = useState("");
+  const [people, setPeople] = useState<Person[]>([]);
+  const [glossary, setGlossary] = useState<string | null>(null);
   const playbackPath = playback?.projectId === project?.id ? playback?.path : undefined;
   const [format, setFormat] = useState("srt");
   const [split, setSplit] = useState<Cue | null>(null);
@@ -254,6 +262,26 @@ export default function App() {
     else run();
   };
   const editLocked = busy || saveState !== "已儲存";
+  const speakersReady = !!status?.models.diarization_available;
+  const speakerCommand = (method: string, params: Record<string, unknown>) =>
+    act(async () => {
+      const current = projectRef.current!;
+      setProject(
+        await rpc<Project>(method, {
+          project_id: current.id,
+          expected_revision: current.revision,
+          ...params,
+        }),
+      );
+    });
+  const loadPeople = useCallback(
+    () => rpc<Person[]>("voiceprint.list").then(setPeople),
+    [],
+  );
+  useEffect(() => {
+    if (tab === "speakers" && desktop)
+      loadPeople().catch((e) => setError(message(e)));
+  }, [tab, loadPeople, project?.revision]);
   const visibleProjects = projects.filter((p) =>
     p.title.toLocaleLowerCase().includes(projectSearch.toLocaleLowerCase()),
   );
@@ -555,6 +583,18 @@ export default function App() {
                     字幕
                   </button>
                   <button
+                    className={tab === "speakers" ? "active" : ""}
+                    onClick={() => {
+                      if (!editLocked) {
+                        setTab("speakers");
+                        setEditing(null);
+                      }
+                    }}
+                  >
+                    <Users size={16} />
+                    講者
+                  </button>
+                  <button
                     className={tab === "summary" ? "active" : ""}
                     onClick={() => {
                       if (!editLocked) {
@@ -623,6 +663,11 @@ export default function App() {
                             if (saveState === "已儲存") setEditing(id);
                           }}
                           onSeek={seek}
+                          groups={project.speaker_summary?.groups ?? []}
+                          onAssign={(id, group) =>
+                            speakerCommand("speaker.assign", { segment_id: id, group })
+                          }
+                          locked={editLocked}
                           onSave={saveSegment}
                           onDraft={markDraft}
                           onClean={markSaved}
@@ -707,6 +752,35 @@ export default function App() {
                       />
                     )}
                   </>
+                )}
+                {tab === "speakers" && (
+                  <SpeakersPanel
+                    project={project}
+                    people={people}
+                    disabled={editLocked || !!working}
+                    ready={speakersReady}
+                    command={speakerCommand}
+                    analyze={(count) =>
+                      setConfirmation({
+                        title: "重新分析講者",
+                        text: project.speaker_summary
+                          ? "這會重新分群並覆蓋目前的分群與手動歸類；你手動輸入的講者名稱會保留。"
+                          : "這會依錄音聲音分群，並以已註冊的聲紋嘗試命名。",
+                        run: () =>
+                          act(async () => {
+                            await rpc("speaker.analyze", {
+                              project_id: project.id,
+                              speaker_count: count,
+                            });
+                          }),
+                      })
+                    }
+                    managePeople={(method, params) =>
+                      act(async () => {
+                        setPeople(await rpc<Person[]>(method, params));
+                      })
+                    }
+                  />
                 )}
                 {tab === "summary" && (
                   <Empty
@@ -821,10 +895,39 @@ export default function App() {
                   </label>
                   <p className="footnote">品質模式：延續前文、不切除靜音。台灣華語建議使用 Breeze ASR 25；台語可另選 Breeze ASR 26。</p>
                   <label className="field-label">
-                    <span><input type="checkbox" checked={wordTimestamps} disabled={!!working}
+                    <span><input type="checkbox" aria-label="產生詞級時間" checked={wordTimestamps} disabled={!!working}
                       onChange={(e) => setWordTimestamps(e.target.checked)} /> 產生詞級時間（字幕細分）</span>
                     <small>預設關閉，與 FABO 品質模式一致；關閉時保留整段時間，拆句需手動核對。</small>
                   </label>
+                  <label className="field-label">
+                    轉錄方案
+                    <select value={profile} disabled={!!working} onChange={(e) => setProfile(e.target.value)}>
+                      <option value="quality">品質（預設，最準）</option>
+                      <option value="balanced">平衡（較快）</option>
+                      <option value="fast">快速（草稿用）</option>
+                    </select>
+                    <small>平衡／快速會降低搜尋寬度或關閉延續前文；Apple 晶片改用快速注意力，且不能同時產生詞級時間。</small>
+                  </label>
+                  <label className="field-label">
+                    <span><input type="checkbox" aria-label="分辨講者" checked={diarize && speakersReady} disabled={!!working || !speakersReady}
+                      onChange={(e) => setDiarize(e.target.checked)} /> 分辨講者（分群與聲紋比對）</span>
+                    <small>
+                      {speakersReady
+                        ? status?.hardware.concurrent_stages
+                          ? "本機將與轉錄同時進行，並依已註冊聲紋嘗試命名。"
+                          : "轉錄完成後接著分析，並依已註冊聲紋嘗試命名。"
+                        : "尚未設定講者模型，請至「模型與設定」選擇。"}
+                    </small>
+                  </label>
+                  {diarize && speakersReady && (
+                    <label className="field-label">
+                      發言人數（可留空）
+                      <input type="number" min={1} max={32} value={speakerCount} disabled={!!working}
+                        placeholder="自動判斷"
+                        onChange={(e) => setSpeakerCount(e.target.value)} />
+                      <small>知道人數時填寫可避免過度分群；留空則依聲音差異自動判斷。</small>
+                    </label>
+                  )}
                   <div className="model-line">
                     <span
                       className={`status-dot ${status?.models.available ? "ready" : ""}`}
@@ -867,6 +970,11 @@ export default function App() {
                               project_id: project.id,
                               language,
                               word_timestamps: wordTimestamps,
+                              profile,
+                              diarize: diarize && speakersReady,
+                              speaker_count: speakerCount
+                                ? Number(speakerCount)
+                                : null,
                             });
                           });
                         if (project.transcript)
@@ -898,7 +1006,9 @@ export default function App() {
                     </strong>
                     {working && <JobProgress job={activeJob} duration={project.duration_ms} />}
                     {activeJob.error && (
-                      <p className="danger">{activeJob.error}</p>
+                      <p className={activeJob.status === "completed" ? "footnote" : "danger"}>
+                        {activeJob.error}
+                      </p>
                     )}
                     {["failed", "cancelled", "interrupted"].includes(
                       activeJob.status,
@@ -970,10 +1080,55 @@ export default function App() {
               <span>資料位置</span>
               <code>{status?.data_dir ?? "桌面啟動後建立"}</code>
             </div>
-            <div className="inline-warning">
-              講者自動分離、AI
-              摘要及模型下載管理尚在開發中。目前可手動修改每段講者名稱。
+            <div className="settings-facts">
+              <span>講者分群模型</span>
+              <strong>
+                {status?.models.speaker_model?.name ?? "尚未設定"}
+                {status && !status.models.diarization_available && status.models.speaker_model ? "（無法使用）" : ""}
+              </strong>
+              <span>運算資源</span>
+              <strong>
+                {status
+                  ? `${status.hardware.cores} 核心 · ${status.hardware.memory_gb} GB · ${
+                      status.hardware.apple_silicon ? "Apple GPU" : status.hardware.cuda ? "NVIDIA CUDA" : "CPU"
+                    }`
+                  : "—"}
+              </strong>
             </div>
+            <button
+              className="secondary full"
+              disabled={!desktop || busy}
+              onClick={() =>
+                act(async () => {
+                  const model = await api.chooseSpeakerModels();
+                  if (model) setNotice("已驗證並設定講者模型。");
+                })
+              }
+            >
+              <Users size={16} />
+              選擇講者模型資料夾
+            </button>
+            <p className="footnote">
+              需含 segmentation/model.onnx 與 nemo_en_titanet_small.onnx（與 fabo-asr 的 models/speakers 相同）。AI 摘要與模型下載管理尚在開發中。
+            </p>
+            <label className="field-label">
+              術語表（選填，提升專有名詞辨識）
+              <textarea
+                rows={3}
+                maxLength={4000}
+                placeholder="以逗號或換行列出人名、產品名、縮寫，例如：胖寶、Breeze ASR、CTBC"
+                value={glossary ?? status?.glossary ?? ""}
+                onChange={(e) => setGlossary(e.target.value)}
+                onBlur={() =>
+                  glossary !== null &&
+                  glossary !== status?.glossary &&
+                  act(async () => {
+                    await rpc("glossary.set", { text: glossary });
+                    setNotice("術語表已儲存，下一次轉錄生效。");
+                  })
+                }
+              />
+            </label>
             <button
               className="primary full"
               disabled={!desktop || busy}
@@ -1084,11 +1239,17 @@ function TranscriptList({
   position,
   onEdit,
   onSeek,
+  groups,
+  onAssign,
+  locked,
   onSave,
   onDraft,
   onClean,
   onDone,
 }: {
+  groups: SpeakerGroup[];
+  onAssign: (id: string, group: string) => void;
+  locked: boolean;
   segments: Segment[];
   editing: string | null;
   position: number;
@@ -1162,6 +1323,32 @@ function TranscriptList({
                     <div className="speaker">
                       <span className="speaker-dot" />
                       {s.speaker || "未標記講者"}
+                      {groups.length > 0 && (
+                        <select
+                          className="group-select"
+                          aria-label="歸屬講者分群"
+                          value={s.speaker_group ?? ""}
+                          disabled={locked}
+                          onChange={(e) => onAssign(s.id, e.target.value)}
+                        >
+                          <option value="">未分群</option>
+                          {groups.map((g) => (
+                            <option key={g.label} value={g.label}>
+                              {g.name}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {s.needs_confirmation && (
+                        <span className="timing-hint" title="這段時間內有多位講者發聲或缺少依據">
+                          講者待確認
+                        </span>
+                      )}
+                      {s.review_reasons?.length ? (
+                        <span className="timing-hint" title={s.review_reasons.join("、")}>
+                          建議核對
+                        </span>
+                      ) : null}
                       {s.alignment_status !== "valid" && (
                         <span className="timing-hint">詞時間待核對</span>
                       )}
@@ -1508,4 +1695,228 @@ export function JobProgress({ job, duration }: { job: Job; duration: number }) {
     {elapsed != null && <small>已執行 {time(elapsed)}</small>}
     {known && <small>每段辨識完成後更新；靜音略過或較難辨識時，進度可能暫停或跳動。</small>}
   </>;
+}
+
+function SpeakersPanel({
+  project,
+  people,
+  disabled,
+  ready,
+  command,
+  analyze,
+  managePeople,
+}: {
+  project: Project;
+  people: Person[];
+  disabled: boolean;
+  ready: boolean;
+  command: (method: string, params: Record<string, unknown>) => Promise<void>;
+  analyze: (count: number | null) => void;
+  managePeople: (method: string, params: Record<string, unknown>) => Promise<void>;
+}) {
+  const summary = project.speaker_summary;
+  const [count, setCount] = useState("");
+  const [registering, setRegistering] = useState<string | null>(null);
+  const [person, setPerson] = useState("");
+  const [newName, setNewName] = useState("");
+  if (!project.transcript)
+    return (
+      <Empty icon={<Users />} title="請先完成轉錄" text="轉錄完成後即可分辨講者。" />
+    );
+  return (
+    <div className="speakers-panel">
+      <div className="editor-toolbar">
+        <span className="muted">
+          {summary
+            ? `${summary.groups.length} 位講者 · ${summary.needs_review} 段待確認`
+            : "尚未分析講者"}
+        </span>
+        <input
+          type="number"
+          min={1}
+          max={32}
+          className="count-input"
+          aria-label="發言人數"
+          placeholder="人數(選填)"
+          value={count}
+          onChange={(e) => setCount(e.target.value)}
+        />
+        <button
+          className="secondary"
+          disabled={disabled || !ready}
+          onClick={() => analyze(count ? Number(count) : null)}
+        >
+          <Sparkles size={14} />
+          {summary ? "重新分析" : "分析講者"}
+        </button>
+      </div>
+      {!ready && (
+        <div className="inline-warning">
+          <AlertCircle size={16} />
+          尚未設定講者模型，請至「模型與設定」選擇講者模型資料夾。
+        </div>
+      )}
+      {summary && summary.groups.length > 6 && (
+        <div className="inline-warning">
+          <AlertCircle size={16} />
+          分出 {summary.groups.length} 位講者，可能過度分群：把聲音相同的分群「合併」，或填入實際人數後重新分析。
+        </div>
+      )}
+      {summary?.groups.map((g) => (
+        <div className="speaker-card" key={g.label}>
+          <div className="speaker-card-head">
+            <input
+              aria-label={`${g.label} 名稱`}
+              defaultValue={g.name}
+              key={g.name}
+              maxLength={80}
+              disabled={disabled}
+              onBlur={(e) => {
+                const name = e.target.value.trim();
+                if (name && name !== g.name)
+                  command("speaker.rename_group", { group: g.label, name });
+                else e.target.value = g.name;
+              }}
+              onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
+            />
+            <span className="muted">
+              {time(g.seconds * 1000)} · {g.segments} 段
+            </span>
+            {g.name_source === "voiceprint" && (
+              <span className="badge green" title={`相似度 ${g.similarity?.toFixed(2)}`}>
+                聲紋比對
+              </span>
+            )}
+          </div>
+          <div className="speaker-card-actions">
+            <select
+              aria-label="合併到"
+              value=""
+              disabled={disabled || summary.groups.length < 2}
+              onChange={(e) =>
+                e.target.value &&
+                command("speaker.merge", { source: g.label, target: e.target.value })
+              }
+            >
+              <option value="">合併到…</option>
+              {summary.groups
+                .filter((o) => o.label !== g.label)
+                .map((o) => (
+                  <option key={o.label} value={o.label}>
+                    {o.name}
+                  </option>
+                ))}
+            </select>
+            <button
+              className="secondary"
+              disabled={disabled || g.excerpt_count < 3}
+              title={
+                g.excerpt_count < 3
+                  ? "此講者乾淨語音不足 3 段，無法建立聲紋"
+                  : "用這位講者的語音建立聲紋，之後的錄音會自動命名"
+              }
+              onClick={() => {
+                setRegistering(registering === g.label ? null : g.label);
+                setPerson("");
+                setNewName(g.name_source === "auto" ? "" : g.name);
+              }}
+            >
+              <Mic2 size={14} />
+              註冊聲紋
+            </button>
+          </div>
+          {registering === g.label && (
+            <div className="register-form">
+              <select value={person} onChange={(e) => setPerson(e.target.value)}>
+                <option value="">新增人員</option>
+                {people.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    加入「{p.name}」的樣本
+                  </option>
+                ))}
+              </select>
+              {!person && (
+                <input
+                  placeholder="姓名"
+                  value={newName}
+                  maxLength={80}
+                  onChange={(e) => setNewName(e.target.value)}
+                />
+              )}
+              <button
+                className="primary"
+                disabled={disabled || (!person && !newName.trim())}
+                onClick={async () => {
+                  await command("voiceprint.register", {
+                    group: g.label,
+                    ...(person ? { person_id: person } : { name: newName.trim() }),
+                  });
+                  setRegistering(null);
+                }}
+              >
+                確認註冊
+              </button>
+            </div>
+          )}
+        </div>
+      ))}
+      <h3 className="people-heading">已註冊的聲紋（{people.length}）</h3>
+      {people.length === 0 && (
+        <p className="footnote">
+          尚無聲紋。為已確認身分的講者註冊後，之後的錄音會自動以姓名標註；比對很保守，不確定時維持「講者 N」。
+        </p>
+      )}
+      {people.map((p) => (
+        <div className="speaker-card" key={p.id}>
+          <div className="speaker-card-head">
+            <input
+              aria-label="聲紋姓名"
+              defaultValue={p.name}
+              key={p.name}
+              maxLength={80}
+              disabled={disabled}
+              onBlur={(e) => {
+                const name = e.target.value.trim();
+                if (name && name !== p.name)
+                  managePeople("voiceprint.rename", { person_id: p.id, name });
+                else e.target.value = p.name;
+              }}
+            />
+            <span className="muted">
+              {p.samples} 個樣本 · {Math.round(p.seconds)} 秒
+            </span>
+          </div>
+          <div className="speaker-card-actions">
+            <label className="muted">
+              <input
+                type="checkbox"
+                checked={p.enabled}
+                disabled={disabled}
+                onChange={(e) =>
+                  managePeople("voiceprint.enable", { person_id: p.id, enabled: e.target.checked })
+                }
+              />{" "}
+              啟用比對
+            </label>
+            <button
+              className="secondary"
+              disabled={disabled}
+              onClick={() => managePeople("voiceprint.delete", { person_id: p.id })}
+            >
+              刪除
+            </button>
+          </div>
+        </div>
+      ))}
+      {people.length > 0 && summary && (
+        <button
+          className="secondary"
+          disabled={disabled}
+          onClick={() => command("speaker.rematch", {})}
+        >
+          以目前聲紋重新比對這份錄音
+        </button>
+      )}
+    </div>
+  );
 }

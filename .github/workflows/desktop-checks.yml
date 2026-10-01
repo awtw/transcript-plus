@@ -31,13 +31,13 @@ jobs:
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg --yes --no-progress
-      - run: uv sync --python 3.12 --frozen --extra asr --extra packaging
+      - run: uv sync --python 3.12 --frozen --extra asr --extra diarization --extra packaging
       - run: npm ci
-      - run: uv run --extra asr --extra packaging pytest -q
+      - run: uv run --extra asr --extra diarization --extra packaging pytest -q
       - run: npm run test:ui
       - run: npm run build
       - name: Bundle Python runtime
-        run: uv run --extra asr --extra packaging python packaging/build_core.py
+        run: uv run --extra asr --extra diarization --extra packaging python packaging/build_core.py
       - run: cargo check --locked --manifest-path apps/desktop/src-tauri/Cargo.toml
       - name: Build unsigned internal macOS DMG
         if: runner.os == 'macOS'

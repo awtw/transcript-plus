@@ -60,6 +60,10 @@ def edit_segment(doc, segment_id, text, speaker=None):
     if speaker is not None:
         require(isinstance(speaker, str) and len(speaker) <= 80,
                 "INVALID_DOCUMENT", "講者名稱最多 80 字。")
+        if speaker.strip() != segment.get("speaker", ""):
+            # A typed name is final: later speaker analysis or group renames must not overwrite it.
+            segment["speaker_source"] = "manual"
+            segment["needs_confirmation"] = False
         segment["speaker"] = speaker.strip()
     validate_document(result)
     return result

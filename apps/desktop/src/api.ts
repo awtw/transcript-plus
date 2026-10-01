@@ -27,6 +27,7 @@ export const api = {
   jobs: () => rpc<Job[]>("job.list"),
   importMedia: () => invoke<Project | null>("import_media"),
   chooseModel: () => invoke<ModelStatus | null>("choose_model"),
+  chooseSpeakerModels: () => invoke<ModelStatus | null>("choose_speaker_models"),
   export: (project: Project, format: string) =>
     invoke<string | null>("export_file", {
       projectId: project.id,
@@ -50,6 +51,8 @@ export const stages: Record<string, string> = {
   preprocess: "準備音訊",
   model_loading: "正在載入模型",
   asr: "正在轉錄",
+  diarization: "正在分辨講者",
+  speaker_assign: "正在標註講者",
   saving: "正在儲存逐字稿",
   complete: "轉錄完成",
   no_speech: "未偵測到語音",

@@ -98,3 +98,28 @@ MLX 的 transcribe 原先整份完成才回傳 segments，造成 UI 一直顯示
 本次 35 項 Python 與 10 項 UI 測試、前端建置通過。30 秒實際錄音的回報為 0、28700、30010 毫秒（工作層限制至檔案時長），辨識文字仍與 FABO 比對基準相同。原先重試的 95:34 錄音已完成，耗時約 14 分 53 秒，逐字稿已儲存，worker.log 無錯誤。
 
 最終 .app 以 90 秒錄音執行 --require-progress 驗證通過：running/asr 階段確實收到非零中途進度，最後完成 33 段文字與播放副本。新版已重新開啟，使用者完整錄音的既有完成結果保留，未再次重跑。
+
+## 對照 fabo-asr 後的更新（2026-10-01）
+
+比對 fabo-asr HEAD `c59c082` 後移植並調整：
+
+**轉錄**
+- `hardware.py`：實體核心／記憶體偵測、CUDA 偵測；CT2 在有 NVIDIA GPU 時用 float16，載入或解碼失敗自動退回 CPU；CPU 執行緒依是否與講者分析並行分配（`TP_DEVICE`、`TP_CPU_THREADS`、`TP_CONCURRENT_STAGES` 可覆寫）。
+- 轉錄方案：品質（預設，與 FABO 相同）／平衡（CT2 beam 3；MLX 快速注意力）／快速（beam 1、不延續前文）。MLX 快速注意力與詞級時間互斥，後端會拒絕組合。
+- 術語表（`initial_prompt`，上限 4000 字元）、低信心段落標記（avg_logprob／no_speech／重複壓縮率）、重疊段落合併、Windows `\\?\` 路徑前綴清除（Rust 與 Python 兩端）。
+
+**講者**
+- `diarization.py` 移植 sherpa-onnx pyannote 分段 + TitaNet 聲紋：分群、長段落換人偵測 `refine_turns`、時間重疊與聲紋證據指派、保守聲紋比對（門檻 0.72、差距 0.12、至少兩段一致）、由會議乾淨語音註冊聲紋。音訊改用專案已前處理的 16 kHz PCM16，以 int16 保存，記憶體約為 float32 的一半。
+- `speakers.py`：講者命名（手動 > 聲紋 > 講者 N）、改名、段落歸類、合併分群（保留註冊用快取有效）、重新比對、詞界拆句。手動輸入的講者名稱永遠優先。
+- 分群在獨立子程序執行（與轉錄並行時各用不同硬體；結束即釋放記憶體）。分群失敗不會丟失已完成的逐字稿，工作以完成狀態保留並顯示原因。
+- 僅講者的改動（改名、歸類、合併、註冊）不使字幕過期。
+- SQLite 結構升至 v2（`projects.speakers`、`people`、`voiceprints`），舊資料庫以 ALTER 補欄位。
+
+**驗證（本機 macOS／Apple Silicon）**
+- 52 項 Python 測試與 12 項 UI 測試通過；`cargo check` 通過。
+- 以 fabo-asr 測試錄音「胖寶進度報告0609_5min」、Breeze ASR 25 MLX 與 fabo 講者模型實跑：5 分鐘錄音約 100 秒完成轉錄 + 分群；開啟詞級時間時，換人處會拆成獨立段落。這是接線與行為驗證，沒有人工標註真值，不是 DER／CER 評估。
+- 6 場 holdout 的 DER 0.739 → 0.309 是 fabo-asr 以其資料得到的數字（見其 `quality-parameters.md`），本專案沿用參數但未重新評估。
+
+**未移植（尚待決定）**
+- fabo 的 Windows 可攜版交叉編譯（cargo-xwin、內嵌 CPython、離線 WebView2／VC runtime、`Diagnose.cmd`、啟動診斷報告）與暫時管理員／多帳號：本專案是單人桌面版，沿用 PyInstaller 與 CI 建置，未建立同等流程，Windows 仍待實機驗收。
+- 以錄音檔直接註冊聲紋、台語候選、摘要。

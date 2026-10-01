@@ -49,12 +49,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir")
     parser.add_argument("--worker")
+    parser.add_argument("--diarize")
     args = parser.parse_args()
     if args.worker:
         from .processes import monitor_parent
         from .worker import main as worker_main
         monitor_parent()
         return worker_main(args.worker)
+    if args.diarize:
+        from .processes import monitor_parent
+        from .worker import diarize_main
+        monitor_parent()
+        return diarize_main(args.diarize)
     if not args.data_dir:
         parser.error("--data-dir is required")
     serve(args.data_dir)

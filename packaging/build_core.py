@@ -17,7 +17,9 @@ def main():
                "--specpath", str(ROOT / "build"), "--paths", str(ROOT / "core"),
                "--collect-all", "faster_whisper", "--collect-all", "ctranslate2", "--collect-all", "onnxruntime",
                "--collect-all", "tokenizers", "--collect-all", "av", "--collect-all", "regex",
-               "--hidden-import", "transcript_plus.worker", "--hidden-import", "transcript_plus.service"]
+               "--collect-all", "sherpa_onnx", "--collect-all", "psutil",
+               "--hidden-import", "transcript_plus.worker", "--hidden-import", "transcript_plus.service",
+               "--hidden-import", "transcript_plus.diarization", "--hidden-import", "transcript_plus.speakers"]
     if platform.system() == "Darwin" and platform.machine() == "arm64":
         # Pin the wheel's JACCL: dyld discovery may otherwise pick Homebrew's
         # incompatible libjaccl.dylib when resolving MLX's @rpath dependency.

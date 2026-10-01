@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import time
 
-from . import __version__, domain, models
+from . import __version__, diarization, domain, hardware, models, speakers
 from .errors import AppError, require
 from .jobs import JobRunner
 from .media import file_hash, probe, prepare_playback
@@ -23,7 +23,11 @@ class Service:
 
     def dispatch(self, method, p):
         if method == "app.status":
-            return {"version": __version__, "data_dir": str(self.store.root), "models": models.status(self.store)}
+            return {"version": __version__, "data_dir": str(self.store.root), "models": models.status(self.store),
+                    "glossary": self.store.setting("glossary", ""),
+                    "hardware": {"cores": hardware.physical_cores(), "memory_gb": round(hardware.memory_bytes() / 1024**3),
+                                 "cuda": hardware.cuda_device_count() > 0, "apple_silicon": hardware.is_apple_silicon(),
+                                 "concurrent_stages": hardware.concurrent_stages()}}
         if method == "project.list":
             return self.store.projects()
         if method == "project.get":
@@ -36,18 +40,30 @@ class Service:
             model = models.inspect_model(p["path"])
             self.store.set_setting("asr_model", model)
             return models.status(self.store)
+        if method == "model.configure_speakers":
+            self.store.set_setting("speaker_models", models.find_speaker_models(p["path"]))
+            return models.status(self.store)
+        if method == "glossary.set":
+            text = p.get("text", "")
+            require(isinstance(text, str) and len(text.strip()) <= 4000, "INVALID_INPUT", "術語表不得超過 4000 字元。")
+            self.store.set_setting("glossary", text.strip())
+            return {"glossary": text.strip()}
         if method == "job.list":
             return self.store.jobs()
         if method == "job.start":
-            return self.runner.enqueue(p["project_id"], p.get("language", ""), word_timestamps=p.get("word_timestamps", False))
+            return self.runner.enqueue(p["project_id"], p.get("language", ""), word_timestamps=p.get("word_timestamps", False),
+                                       profile=p.get("profile", "quality"), diarize=p.get("diarize", False),
+                                       speaker_count=p.get("speaker_count"))
         if method == "job.cancel":
             return self.runner.cancel(p["job_id"])
         if method == "job.retry":
             with self.store.connection() as db:
                 old = db.execute("SELECT * FROM jobs WHERE id=?", (p["job_id"],)).fetchone()
             require(old, "NOT_FOUND", "找不到工作。")
-            return self.runner.enqueue(old["project_id"], json.loads(old["parameters"])["language"], old["id"],
-                                       json.loads(old["parameters"]).get("asr_parameters", {}).get("word_timestamps", False))
+            stored = json.loads(old["parameters"])
+            request = stored.get("request") or {"language": stored.get("language", ""), "kind": "transcribe",
+                                                 "word_timestamps": stored.get("asr_parameters", {}).get("word_timestamps", False)}
+            return self.runner.enqueue(old["project_id"], retry_of=old["id"], **request)
         if method == "transcript.edit":
             project = self.store.project(p["project_id"])
             require(project["transcript"], "NOT_READY", "請先完成轉錄。")
@@ -60,6 +76,10 @@ class Service:
                 require(row, "NOT_FOUND", "找不到要復原的版本。")
                 self.store.save_transcript(p["project_id"], p["expected_revision"], json.loads(row[0]), db)
             return self.get_project(p["project_id"])
+        if method.startswith("speaker."):
+            return self.speaker(method, p)
+        if method.startswith("voiceprint."):
+            return self.voiceprint(method, p)
         if method.startswith("caption."):
             return self.caption(method, p)
         if method == "export.render":
@@ -70,6 +90,8 @@ class Service:
 
     def get_project(self, project_id):
         project = self.store.project(project_id)
+        state = project.pop("speakers")
+        project["speaker_summary"] = speakers.summary(project["transcript"], state) if state and project["transcript"] else None
         project["media_path"] = str(self.store.root / project["media_path"])
         project["warnings"] = domain.caption_warnings(project["captions"], project["duration_ms"]) if project["captions"] else []
         return project
@@ -122,4 +144,86 @@ class Service:
             else:
                 raise AppError("UNKNOWN_METHOD", "不支援的字幕操作。")
         self.store.save_captions(project["id"], p["expected_revision"], track, p.get("expected_track_revision"))
+        return self.get_project(project["id"])
+
+    def speaker(self, method, p):
+        project = self.store.project(p["project_id"])
+        if method == "speaker.analyze":
+            return self.runner.enqueue(project["id"], kind="diarize", speaker_count=p.get("speaker_count"))
+        state, doc = self.store.project_speakers(project["id"]), project["transcript"]
+        require(doc and state, "NOT_READY", "尚未執行講者分析。")
+        require(project["revision"] == p["expected_revision"], "REVISION_CONFLICT", "內容已更新，請重新載入。")
+        if method == "speaker.rename_group":
+            doc, state = speakers.rename_group(doc, state, p["group"], p["name"])
+        elif method == "speaker.assign":
+            doc = speakers.assign_segment(doc, state, p["segment_id"], p["group"])
+        elif method == "speaker.merge":
+            doc, state = speakers.merge_groups(doc, state, p["source"], p["target"], project["media_hash"])
+            doc, state = speakers.rematch(doc, state, self.store.voiceprints(enabled_only=True))
+        elif method == "speaker.rematch":
+            doc, state = speakers.rematch(doc, state, self.store.voiceprints(enabled_only=True))
+        else:
+            raise AppError("UNKNOWN_METHOD", "不支援的講者操作。")
+        self.store.save_transcript(project["id"], project["revision"], doc, speakers=state, keep_captions=True)
+        return self.get_project(project["id"])
+
+    def voiceprint(self, method, p):
+        if method == "voiceprint.list":
+            people = {}
+            for row in self.store.voiceprints():
+                person = people.setdefault(row["person_id"], {"id": row["person_id"], "name": row["name"], "samples": 0,
+                                                              "enabled": False, "seconds": 0., "created": row["created"]})
+                person["samples"] += 1
+                person["enabled"] = person["enabled"] or row["enabled"]
+                person["seconds"] += row["quality"].get("duration_seconds", 0.)
+            return list(people.values())
+        with self.store.connection() as db:
+            if method == "voiceprint.rename":
+                name = p["name"].strip() if isinstance(p.get("name"), str) else ""
+                require(name and len(name) <= 80, "INVALID_INPUT", "姓名需為 1–80 字。")
+                db.execute("UPDATE people SET name=? WHERE id=?", (name, p["person_id"]))
+            elif method == "voiceprint.delete":
+                db.execute("DELETE FROM people WHERE id=?", (p["person_id"],))
+            elif method == "voiceprint.enable":
+                require(type(p["enabled"]) is bool, "INVALID_INPUT", "設定必須為布林值。")
+                db.execute("UPDATE voiceprints SET enabled=? WHERE person_id=?", (int(p["enabled"]), p["person_id"]))
+            elif method != "voiceprint.register":
+                raise AppError("UNKNOWN_METHOD", "不支援的聲紋操作。")
+        if method != "voiceprint.register":
+            return self.voiceprint("voiceprint.list", p)
+        return self.register_voiceprint(p)
+
+    def register_voiceprint(self, p):
+        """Register a person from a speaker group's clean excerpts, then rematch this project."""
+        project = self.store.project(p["project_id"])
+        state, doc = self.store.project_speakers(project["id"]), project["transcript"]
+        require(doc and state, "NOT_READY", "尚未執行講者分析。")
+        require(project["revision"] == p["expected_revision"], "REVISION_CONFLICT", "內容已更新，請重新載入。")
+        group = p["group"]
+        require(speakers.group_is_registrable(doc, group), "STALE_ANALYSIS",
+                "此分群有手動移入的段落，語音樣本與成員不一致；請重新分析講者後再註冊。")
+        built = diarization.build_voiceprint(project["media_hash"], state["turns"], state["cache"], group,
+                                             state["cache"]["binding"]["model_hash"])
+        name = (p.get("name") or "").strip()
+        existing = self.store.voiceprints()
+        with self.store.connection() as db:
+            if p.get("person_id"):
+                person = db.execute("SELECT * FROM people WHERE id=?", (p["person_id"],)).fetchone()
+                require(person, "NOT_FOUND", "找不到這位講者。")
+                person_id = person["id"]
+            else:
+                require(name and len(name) <= 80, "INVALID_INPUT", "請輸入姓名（1–80 字）。")
+                person_id = domain.uid()
+            require(not any(v["person_id"] == person_id and v["project_id"] == project["id"] and v["speaker_group"] == group
+                            for v in existing), "DUPLICATE", "已經從這個專案的這位講者註冊過聲紋。")
+            clash = diarization.conflicting_person(built["embedding"], [v for v in existing if v["person_id"] != person_id and v["enabled"]])
+            require(clash is None, "VOICE_CONFLICT",
+                    f"這段聲音與已註冊的「{clash[1] if clash else ''}」過於相似，註冊後會互相干擾；若是同一人，請改選該講者新增樣本。")
+            if not p.get("person_id"):
+                db.execute("INSERT INTO people VALUES (?,?,?)", (person_id, name, time.time()))
+            db.execute("INSERT INTO voiceprints VALUES (?,?,?,?,?,1,?,?,?)",
+                       (domain.uid(), person_id, json.dumps(built["embedding"]), json.dumps(built["quality"]),
+                        built["model_hash"], project["id"], group, time.time()))
+        doc, state = speakers.rematch(doc, state, self.store.voiceprints(enabled_only=True))
+        self.store.save_transcript(project["id"], project["revision"], doc, speakers=state, keep_captions=True)
         return self.get_project(project["id"])

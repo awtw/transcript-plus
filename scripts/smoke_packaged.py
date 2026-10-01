@@ -13,6 +13,7 @@ def main():
     parser.add_argument('--model', required=True)
     parser.add_argument('--audio', required=True)
     parser.add_argument('--data-dir', required=True, help='Isolated smoke workspace')
+    parser.add_argument('--speaker-models', help='Folder with segmentation/model.onnx and nemo_en_titanet_small.onnx; also checks speaker grouping')
     parser.add_argument('--require-progress', action='store_true', help='Use a 60–90 second clip to observe intermediate ASR progress')
     args = parser.parse_args()
     root = Path(args.data_dir).resolve()
@@ -39,7 +40,9 @@ def main():
             rpc('model.configure', {'path': str(Path(args.model).resolve())})
             project = rpc('project.import', {'path': str(Path(args.audio).resolve())})
             playback = rpc('project.playback', {'project_id': project['id']})
-            job_id = rpc('job.start', {'project_id': project['id']})['job_id']
+            if args.speaker_models:
+                rpc('model.configure_speakers', {'path': str(Path(args.speaker_models).resolve())})
+            job_id = rpc('job.start', {'project_id': project['id'], 'diarize': bool(args.speaker_models)})['job_id']
             saw_progress = False
             deadline = time.monotonic() + 300
             while time.monotonic() < deadline:
@@ -53,9 +56,13 @@ def main():
                     if args.require_progress:
                         assert saw_progress, 'No intermediate progress observed in the final app core'
                     assert doc['segments'], 'Use a short audible speech clip'
+                    summary = rpc('project.get', {'project_id': project['id']})['speaker_summary']
+                    if args.speaker_models:
+                        assert summary and summary['groups'], f'Speaker analysis produced no groups: {job}'
                     assert Path(playback['media_path']).is_file()
                     print(json.dumps({'status': job['status'], 'engine': doc['engine'],
-                                      'segments': len(doc['segments']), 'playback': True, 'intermediate_progress': saw_progress}))
+                                      'segments': len(doc['segments']), 'playback': True, 'intermediate_progress': saw_progress,
+                                      'speaker_groups': len(summary['groups']) if summary else 0}))
                     return
                 time.sleep(1)
             raise TimeoutError('Packaged ASR exceeded 300 seconds')

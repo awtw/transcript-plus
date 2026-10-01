@@ -7,6 +7,7 @@ dependencies = ["regex>=2024.11"]
 
 [project.optional-dependencies]
 asr = ["faster-whisper>=1.1,<2", "mlx-whisper>=0.4.3,<0.5; sys_platform == 'darwin' and platform_machine == 'arm64'"]
+diarization = ["sherpa-onnx==1.13.7", "sherpa-onnx-core==1.13.7", "psutil>=7,<8", "numpy>=1.26,<3"]
 packaging = ["pyinstaller>=6.16,<7"]
 
 [dependency-groups]
