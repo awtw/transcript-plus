@@ -60,6 +60,7 @@ export interface SpeakerGroup {
   segments: number;
   match_reason: string | null;
   similarity: number | null;
+  similarity_percent?: number | null;
   excerpt_count: number;
   speaker_id: string | null;
 }
@@ -96,6 +97,7 @@ export interface Job {
   stage: string;
   attempt: number;
   processed_ms: number | null;
+  preview?: { start_ms: number; end_ms: number; text: string }[];
   error: string | null;
   created: number;
   started: number | null;
@@ -104,7 +106,7 @@ export interface ModelStatus {
   available: boolean;
   runtime_available: boolean;
   model: { name: string; path: string; size_bytes: number; engine: string } | null;
-  speaker_model: { name: string } | null;
+  speaker_model: { name: string; voiceprint?: boolean } | null;
   diarization_available: boolean;
   summary_available: boolean;
 }

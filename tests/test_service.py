@@ -134,3 +134,12 @@ def test_m4a_playback_copy_is_seekable_cached_and_preserves_original(tmp_path, s
     original.write_bytes(b'changed')
     with pytest.raises(AppError, match='原始錄音已變更'):
         service.dispatch('project.playback', {'project_id': project['id']})
+
+
+def test_job_preview_is_only_exposed_while_running(service):
+    with service.store.connection() as db:
+        for job_id, status in [("r", "running"), ("c", "completed")]:
+            db.execute("INSERT INTO jobs(id,project_id,status,stage,attempt,input_revision,parameters,preview,created) VALUES (?,'p1',?,'asr',1,1,'{}',?,?)",
+                       (job_id, status, '[{"start_ms":0,"end_ms":900,"text":"大家好"}]', time.time()))
+    previews = {job["id"]: job["preview"] for job in service.store.jobs()}
+    assert previews["r"][0]["text"] == "大家好" and previews["c"] == []

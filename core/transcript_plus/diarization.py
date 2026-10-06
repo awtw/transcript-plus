@@ -7,6 +7,8 @@ project's preprocessed 16 kHz mono PCM16 WAV, so enrollment and meetings share a
 import gc
 import hashlib
 import json
+import os
+from pathlib import Path
 import wave
 
 import numpy as np
@@ -19,6 +21,27 @@ PREPROCESSING = "tp-pcm16-mono-16000-v1"
 MAX_SECONDS = 3 * 3600
 DEFAULTS = {"cluster_threshold": .99, "window_shift": .25, "min_duration_on": .3, "min_duration_off": .5}
 MATCH_THRESHOLD, MATCH_MARGIN = .72, .12
+MATCH_MODES = ("fuzzy", "forced")
+
+# Name-matching gates per voiceprint model: (threshold, margin, roster-merge similarity, roster-merge margin, registration conflict).
+# Scores of different models are on different scales, so the gate follows the model. Calibrated by fabo-asr on a near-field
+# enrollment -> far-field single-device benchmark (wrong-name rate 0%); uncalibrated models keep the conservative defaults.
+DEFAULT_GATES = (.72, .12, .5, .05, .72)
+CALIBRATED_GATES = {
+    "nemo_en_titanet_small.onnx": (.5, .08, .5, .05, .72),
+    "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx": (.45, .08, .5, .05, .6),
+    "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx": (.35, .08, .45, .05, .55),
+}
+
+
+def gates_for(model_path):
+    values = CALIBRATED_GATES.get(Path(model_path).name, DEFAULT_GATES)
+    return dict(zip(("threshold", "margin", "merge_similarity", "merge_margin", "conflict"), values))
+
+
+def voiceprint_model(models):
+    """Model that answers *who is this*; falls back to the clustering model when no Chinese voiceprint model is installed."""
+    return models.get("voiceprint") or models["embedding"]
 
 
 def model_digest(path):
@@ -106,6 +129,113 @@ def conservative_match(vectors, profiles, fingerprint, threshold=MATCH_THRESHOLD
         return {**result, "match_reason": "inconsistent_excerpts"}
     winner = next(p for p in eligible if _identity(p) == winners[0])
     return {"speaker_id": winners[0], "speaker_name": winner["name"], "similarity": min(scores), "match_reason": "consistent_excerpts"}
+
+
+def similarity_percent(similarity):
+    """Cosine similarity as a 0-100 display value: how alike the voices sound, not the probability of being right."""
+    return None if similarity is None or not np.isfinite(similarity) else int(round(max(0., min(1., float(similarity))) * 100))
+
+
+def hungarian_max(scores):
+    """Maximise total score; each row/column is used at most once. scores: 2-D array. Returns [(row, col)]."""
+    scores = np.asarray(scores, dtype=float)
+    transposed = scores.shape[0] > scores.shape[1]
+    cost = (-scores.T if transposed else -scores).copy()
+    rows, cols = cost.shape
+    u, v = np.zeros(rows + 1), np.zeros(cols + 1)
+    match, way = np.zeros(cols + 1, dtype=int), np.zeros(cols + 1, dtype=int)
+    for i in range(1, rows + 1):
+        match[0], j0 = i, 0
+        minv, used = np.full(cols + 1, np.inf), np.zeros(cols + 1, dtype=bool)
+        while True:
+            used[j0] = True
+            i0, delta, j1 = match[j0], np.inf, 0
+            for j in range(1, cols + 1):
+                if used[j]:
+                    continue
+                current = cost[i0 - 1, j - 1] - u[i0] - v[j]
+                if current < minv[j]:
+                    minv[j], way[j] = current, j0
+                if minv[j] < delta:
+                    delta, j1 = minv[j], j
+            for j in range(cols + 1):
+                if used[j]:
+                    u[match[j]] += delta
+                    v[j] -= delta
+                else:
+                    minv[j] -= delta
+            j0 = j1
+            if match[j0] == 0:
+                break
+        while j0:
+            j1 = way[j0]
+            match[j0] = match[j1]
+            j0 = j1
+    pairs = [(match[j] - 1, j - 1) for j in range(1, cols + 1) if match[j]]
+    return [(c, r) for r, c in pairs] if transposed else pairs
+
+
+def eligible_profiles(profiles, fingerprint):
+    return [p for p in profiles if p.get("enabled", True) and p["model_hash"] == fingerprint
+            and p.get("quality", {}).get("preprocessing") == PREPROCESSING]
+
+
+def forced_match(group_vectors, profiles, fingerprint, candidate_ids=None):
+    """Pair each enrolled person with at most one group (best overall assignment). Never invents a name.
+
+    Returns {group: match} only for groups that received a person; leftover groups are absent.
+    """
+    eligible = eligible_profiles(profiles, fingerprint)
+    if candidate_ids is not None:
+        wanted = set(candidate_ids)
+        eligible = [p for p in eligible if _identity(p) in wanted]
+    people = {}
+    for person in eligible:
+        reference = np.asarray(person["embedding"], dtype=float)
+        if not np.isfinite(reference).all() or np.linalg.norm(reference) < 1e-8:
+            continue
+        people.setdefault(_identity(person), []).append((person, reference / np.linalg.norm(reference)))
+    centers = {g: _unit(vs) for g, vs in group_vectors.items() if vs}
+    centers = {g: c for g, c in centers.items() if c is not None}
+    groups, ids = sorted(centers), sorted(people)
+    if not groups or not ids:
+        return {}
+    scores = np.full((len(groups), len(ids)), -1.)
+    for gi, group in enumerate(groups):
+        for pi, identity in enumerate(ids):
+            comparable = [float(centers[group] @ ref) for _, ref in people[identity] if ref.shape == centers[group].shape]
+            if comparable:
+                scores[gi, pi] = max(comparable)
+    result = {}
+    for gi, pi in hungarian_max(scores):
+        if scores[gi, pi] <= -1.:
+            continue
+        person = people[ids[pi]][0][0]
+        second = max((scores[gi, k] for k in range(len(ids)) if k != pi), default=-1.)
+        result[groups[gi]] = {"speaker_id": ids[pi], "speaker_name": person["name"], "similarity": float(scores[gi, pi]),
+                              "match_reason": "forced", "runner_up_gap": float(scores[gi, pi] - second) if second > -1. else None}
+    return result
+
+
+def match_groups(cache, profiles, fingerprint, match_mode="fuzzy", candidate_ids=None):
+    """fuzzy: conservative per-excerpt agreement. forced: best one-to-one pairing among the enrolled (optionally limited) people."""
+    if match_mode not in MATCH_MODES:
+        raise ValueError("比對模式只能是 fuzzy 或 forced")
+    gates = cache.get("gates") or {}
+    threshold, margin = gates.get("threshold", MATCH_THRESHOLD), gates.get("margin", MATCH_MARGIN)
+    vectors = {label: [np.asarray(v) for v in found] for label, found in cache["vectors"].items()}
+    groups = {label: {**conservative_match(found, profiles, fingerprint, threshold, margin), "excerpt_count": len(found)}
+              for label, found in vectors.items()}
+    if match_mode == "forced":
+        forced = forced_match(vectors, profiles, fingerprint, candidate_ids)
+        for label in groups:
+            if label in forced:
+                groups[label] = {**groups[label], **forced[label]}
+            else:  # the global pairing gave this person to another group; one person must not sit on two groups
+                groups[label] = {**groups[label], "speaker_id": None, "speaker_name": "", "match_reason": "forced_unassigned"}
+    for group in groups.values():
+        group["similarity_percent"] = similarity_percent(group.get("similarity"))
+    return groups
 
 
 VERIFY_MIN_SECONDS, VERIFY_LOW, VERIFY_HIGH, VERIFY_GAP = 3., .45, .6, .2
@@ -298,6 +428,108 @@ def refine_turns(turns, embed):
     return output, {"split_turns": len(by_turn), "relabeled_seconds": moved, "new_groups": len(created)}
 
 
+# Over-split clusters. A threshold low enough to keep different people apart also cuts one person into many short clusters.
+# Short groups fold into the most similar substantial group; groups that all sound like the same enrolled person fold
+# together. This only regroups voices: names still come from conservative_match.
+MERGE_MIN_SECONDS, MERGE_SIMILARITY = 60., .5
+CENTER_TURNS, CENTER_MIN_SECONDS, CENTER_MAX_SECONDS = 10, 1.5, 6.
+
+
+def _enabled(name):
+    return os.environ.get(name, "1").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def group_centers(turns, embed):
+    """Mean voice per group from its longest turns (first few seconds of each). embed(start, end) -> unit vector."""
+    pools = {}
+    for turn in turns:
+        if turn["end"] - turn["start"] >= CENTER_MIN_SECONDS:
+            pools.setdefault(turn["speaker_group"], []).append(turn)
+    centers = {}
+    for group, pool in pools.items():
+        vectors = []
+        for turn in sorted(pool, key=lambda t: t["start"] - t["end"])[:CENTER_TURNS]:
+            try:
+                vectors.append(embed(turn["start"], min(turn["end"], turn["start"] + CENTER_MAX_SECONDS)))
+            except (ValueError, RuntimeError):
+                continue
+        center = _unit(vectors) if vectors else None
+        if center is not None:
+            centers[group] = center
+    return centers
+
+
+def _group_seconds(turns):
+    seconds = {}
+    for turn in turns:
+        seconds[turn["speaker_group"]] = seconds.get(turn["speaker_group"], 0.) + turn["end"] - turn["start"]
+    return seconds
+
+
+def _relabel(turns, mapping):
+    return [{**t, "speaker_group": mapping[t["speaker_group"]], "merged_from": t["speaker_group"]}
+            if mapping.get(t["speaker_group"], t["speaker_group"]) != t["speaker_group"] else t for t in turns]
+
+
+def merge_small_groups(turns, centers, protect=()):
+    seconds = _group_seconds(turns)
+    big = [g for g in seconds if seconds[g] >= MERGE_MIN_SECONDS and g in centers]
+    mapping = {g: g for g in seconds}
+    if big:
+        for group in seconds:
+            if group in big or group in protect or group not in centers:
+                continue
+            best = max(big, key=lambda b: float(centers[group] @ centers[b]))
+            if float(centers[group] @ centers[best]) >= MERGE_SIMILARITY:
+                mapping[group] = best
+    return _relabel(turns, mapping), mapping
+
+
+def merge_by_roster(turns, centers, profiles, fingerprint, gates, protect=()):
+    eligible = eligible_profiles(profiles, fingerprint)
+    seconds = _group_seconds(turns)
+    mapping = {g: g for g in seconds}
+    if not eligible:
+        return turns, mapping
+    claimed = {}
+    for group, center in centers.items():
+        if group in protect:
+            continue
+        by_person = {}
+        for person in eligible:
+            reference = np.asarray(person["embedding"], dtype=float)
+            if reference.shape != center.shape or not np.isfinite(reference).all() or np.linalg.norm(reference) < 1e-8:
+                continue
+            by_person[_identity(person)] = max(by_person.get(_identity(person), -1.),
+                                               float(center @ (reference / np.linalg.norm(reference))))
+        ranked = sorted(by_person.items(), key=lambda kv: kv[1], reverse=True)
+        if not ranked:
+            continue
+        second = ranked[1][1] if len(ranked) > 1 else -1.
+        if ranked[0][1] >= gates["merge_similarity"] and ranked[0][1] - second >= gates["merge_margin"]:
+            claimed.setdefault(ranked[0][0], []).append(group)
+    for groups in claimed.values():
+        if len(groups) > 1:
+            target = max(groups, key=lambda g: seconds.get(g, 0.))
+            for group in groups:
+                mapping[group] = target
+    return _relabel(turns, mapping), mapping
+
+
+def consolidate_groups(turns, embed, profiles, fingerprint, gates, protect=(), embed_voice=None):
+    """Fold over-split clusters. Returns (turns, info). TP_DIARIZATION_MERGE_SMALL / _ROSTER=0 switch a step off."""
+    info = {"groups_before": len({t["speaker_group"] for t in turns}), "small_merged": 0, "roster_merged": 0}
+    if _enabled("TP_DIARIZATION_MERGE_SMALL"):
+        turns, mapping = merge_small_groups(turns, group_centers(turns, embed), protect)
+        info["small_merged"] = sum(1 for g, t in mapping.items() if g != t)
+    if profiles and _enabled("TP_DIARIZATION_MERGE_ROSTER"):
+        # Roster voiceprints come from the voiceprint model, so compare in that space; merged groups also have more speech.
+        turns, mapping = merge_by_roster(turns, group_centers(turns, embed_voice or embed), profiles, fingerprint, gates, protect)
+        info["roster_merged"] = sum(1 for g, t in mapping.items() if g != t)
+    info["groups_after"] = len({t["speaker_group"] for t in turns})
+    return turns, info
+
+
 def clean_excerpts(turns, group, maximum=5):
     clean = [t for t in turns if t["speaker_group"] == group and t["end"] - t["start"] >= 2 and not any(
         other["speaker_group"] != group and min(other["end"], t["end"]) > max(other["start"], t["start"]) for other in turns)]
@@ -351,11 +583,6 @@ def centers_from(cache):
     return result
 
 
-def match_groups(cache, profiles, fingerprint):
-    return {label: {**conservative_match([np.asarray(v) for v in vectors], profiles, fingerprint),
-                    "excerpt_count": len(vectors)} for label, vectors in cache["vectors"].items()}
-
-
 def analyze(samples, models, profiles, media_hash, *, speaker_count=None, progress=None, **options):
     """Cluster speakers over the whole recording; independent of the transcript."""
     if speaker_count is not None and (type(speaker_count) is not int or not 1 <= speaker_count <= 32):
@@ -388,30 +615,54 @@ def analyze(samples, models, profiles, media_hash, *, speaker_count=None, progre
     gc.collect()
     if not turns:
         raise ValueError("未偵測到可分群的語音")
-    fingerprint = model_digest(models["embedding"])
+    voice_path = voiceprint_model(models)
+    fingerprint = model_digest(voice_path)
+    gates = gates_for(voice_path)
+    # Clustering (turn refinement, small-group merging, centers for assignment) stays on the model that handles overlap well;
+    # naming people uses the voiceprint model. Same file -> one engine, behavior identical to a single model.
+    split_models = str(voice_path) != str(models["embedding"])
     extract = extractor(models["embedding"], threads)
+    voice = extractor(voice_path, threads) if split_models else extract
+    embed_span = lambda a, b: embedding(extract, floats(samples, a, b))
+    embed_voice = lambda a, b: embedding(voice, floats(samples, a, b))
     refine = {"split_turns": 0, "relabeled_seconds": 0., "new_groups": 0}
-    if speaker_count is None:
-        turns, refine = refine_turns(turns, lambda a, b: embedding(extract, floats(samples, a, b)))
-    vectors = {}
+    merge = {"groups_before": len({t["speaker_group"] for t in turns}), "small_merged": 0, "roster_merged": 0,
+             "groups_after": len({t["speaker_group"] for t in turns})}
+    if speaker_count is None:  # a user-supplied head count is stronger evidence than any heuristic regrouping
+        original = {t["speaker_group"] for t in turns}
+        turns, refine = refine_turns(turns, embed_span)
+        # Groups created by refinement were split out on purpose; do not fold them straight back.
+        turns, merge = consolidate_groups(turns, embed_span, profiles, fingerprint, gates,
+                                          protect={t["speaker_group"] for t in turns} - original, embed_voice=embed_voice)
+    vectors, centers = {}, {}
     for group in sorted({t["speaker_group"] for t in turns}):
-        vectors[group] = []
+        vectors[group], cluster = [], []
         for excerpt in clean_excerpts(turns, group):
+            span = floats(samples, excerpt["start"], excerpt["end"])
             try:
-                vectors[group].append(embedding(extract, floats(samples, excerpt["start"], excerpt["end"])).tolist())
+                vector = embedding(voice, span)
+                cluster.append(embedding(extract, span) if split_models else vector)
+                vectors[group].append(vector.tolist())
             except (ValueError, RuntimeError):
                 continue
-    cache = {"binding": cache_binding(media_hash, turns, fingerprint), "vectors": vectors}
+        center = _unit(cluster) if cluster else None
+        if split_models and center is not None:
+            centers[group] = center.tolist()  # assignment tie-breaks use the clustering model's score scale
+    cache = {"binding": cache_binding(media_hash, turns, fingerprint), "vectors": vectors, "gates": gates}
+    if split_models:
+        cache["centers"] = centers
     return {"turns": turns, "groups": match_groups(cache, profiles, fingerprint), "cache": cache,
             "metrics": {**settings, "speaker_count": speaker_count, "observed_speaker_count": len(vectors), "threads": threads,
-                        "audio_duration_seconds": len(samples) / RATE, "embedding_model_hash": fingerprint,
-                        "preprocessing": PREPROCESSING, "turn_refinement": refine}}
+                        "audio_duration_seconds": len(samples) / RATE, "embedding_model_hash": model_digest(models["embedding"])
+                        if split_models else fingerprint, "voiceprint_model_hash": fingerprint,
+                        "preprocessing": PREPROCESSING, "turn_refinement": refine, "group_merge": merge}}
 
 
 def assign(samples, models, spans, analysis):
     """Label transcript spans. Loads the embedding model once for voice-evidence tie-breaks."""
     cache = analysis["cache"]
-    centers = centers_from(cache)
+    stored = cache.get("centers")
+    centers = {k: np.asarray(v, dtype=float) for k, v in stored.items()} if stored else centers_from(cache)
     engine = [None]
 
     def score(span, candidates):
@@ -450,13 +701,13 @@ def build_voiceprint(media_hash, turns, cache, group, model_hash):
                         "duration_seconds": float(sum(e["end"] - e["start"] for e in excerpts))}}
 
 
-def conflicting_person(embedding_vector, others):
+def conflicting_person(embedding_vector, others, threshold=MATCH_THRESHOLD):
     """others: voiceprint rows of other people. Returns (person_id, name) when voices are too alike to coexist."""
     vector = np.asarray(embedding_vector, dtype=float)
     for row in others:
         reference = np.asarray(row["embedding"], dtype=float)
         if reference.shape != vector.shape or np.linalg.norm(reference) < 1e-8:
             continue
-        if float(vector @ (reference / np.linalg.norm(reference))) >= MATCH_THRESHOLD:
+        if float(vector @ (reference / np.linalg.norm(reference))) >= threshold:
             return row["person_id"], row["name"]
     return None

@@ -161,7 +161,10 @@ class Service:
             doc, state = speakers.merge_groups(doc, state, p["source"], p["target"], project["media_hash"])
             doc, state = speakers.rematch(doc, state, self.store.voiceprints(enabled_only=True))
         elif method == "speaker.rematch":
-            doc, state = speakers.rematch(doc, state, self.store.voiceprints(enabled_only=True))
+            ids = p.get("candidate_ids")
+            require(ids is None or (isinstance(ids, list) and all(isinstance(i, str) for i in ids)), "INVALID_INPUT", "出席者設定格式不正確。")
+            require(p.get("match_mode", "fuzzy") in diarization.MATCH_MODES, "INVALID_INPUT", "比對模式只能是 fuzzy 或 forced。")
+            doc, state = speakers.rematch(doc, state, self.store.voiceprints(enabled_only=True), p.get("match_mode", "fuzzy"), ids)
         else:
             raise AppError("UNKNOWN_METHOD", "不支援的講者操作。")
         self.store.save_transcript(project["id"], project["revision"], doc, speakers=state, keep_captions=True)
@@ -216,7 +219,8 @@ class Service:
                 person_id = domain.uid()
             require(not any(v["person_id"] == person_id and v["project_id"] == project["id"] and v["speaker_group"] == group
                             for v in existing), "DUPLICATE", "已經從這個專案的這位講者註冊過聲紋。")
-            clash = diarization.conflicting_person(built["embedding"], [v for v in existing if v["person_id"] != person_id and v["enabled"]])
+            clash = diarization.conflicting_person(built["embedding"], [v for v in existing if v["person_id"] != person_id and v["enabled"]],
+                                                state["cache"].get("gates", {}).get("conflict", diarization.MATCH_THRESHOLD))
             require(clash is None, "VOICE_CONFLICT",
                     f"這段聲音與已註冊的「{clash[1] if clash else ''}」過於相似，註冊後會互相干擾；若是同一人，請改選該講者新增樣本。")
             if not p.get("person_id"):

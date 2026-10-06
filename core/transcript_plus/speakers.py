@@ -132,6 +132,7 @@ def summary(doc, state):
                "name_source": state["names"].get(label, {}).get("source", "auto"),
                "seconds": round(seconds.get(label, 0.), 1), "segments": counts.get(label, 0),
                "match_reason": match.get("match_reason"), "similarity": match.get("similarity"),
+               "similarity_percent": match.get("similarity_percent", diarization.similarity_percent(match.get("similarity"))),
                "excerpt_count": match.get("excerpt_count", 0), "speaker_id": match.get("speaker_id")}
               for label, match in state["groups"].items() if counts.get(label)]  # noise clusters own no segments
     groups.sort(key=lambda g: -g["seconds"])
@@ -179,6 +180,12 @@ def merge_groups(doc, state, source, target, media_hash):
     if len(merged) > 5:
         merged = [merged[i] for i in sorted(set(np.linspace(0, len(merged) - 1, 5, dtype=int)))]
     vectors[target] = merged
+    centers = state["cache"].get("centers")
+    if centers:  # clustering-model centers used for assignment follow the merge
+        pair = [np.asarray(centers.pop(label), dtype=float) for label in (source, target) if label in centers]
+        center = np.mean(pair, axis=0) if pair else None
+        if center is not None and np.linalg.norm(center) > 1e-8:
+            centers[target] = (center / np.linalg.norm(center)).tolist()
     binding = state["cache"]["binding"]
     state["cache"]["binding"] = diarization.cache_binding(media_hash, state["turns"], binding["model_hash"])
     state["groups"].pop(source)
@@ -187,10 +194,14 @@ def merge_groups(doc, state, source, target, media_hash):
     return result, state
 
 
-def rematch(doc, state, profiles):
-    """Re-run voiceprint matching on the cached excerpts, then refresh non-manual names."""
+def rematch(doc, state, profiles, match_mode="fuzzy", candidate_ids=None):
+    """Re-run voiceprint matching on the cached excerpts, then refresh non-manual names.
+
+    forced pairs each enrolled person with at most one group (optionally limited to candidate_ids); fuzzy stays conservative.
+    """
     result, state = deepcopy(doc), deepcopy(state)
-    state["groups"] = diarization.match_groups(state["cache"], profiles, state["cache"]["binding"]["model_hash"])
+    state["groups"] = diarization.match_groups(state["cache"], profiles, state["cache"]["binding"]["model_hash"],
+                                               match_mode, candidate_ids)
     resolve_names(state, result)
     sync_segment_names(result, state)
     return result, state

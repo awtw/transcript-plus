@@ -13,6 +13,8 @@ from .errors import AppError, require
 from .media import atomic_json, file_hash, process_options
 from .processes import terminate_tree
 
+PREVIEW_SEGMENTS = 12
+
 
 class JobRunner:
     def __init__(self, store):
@@ -133,7 +135,7 @@ class JobRunner:
             speaker_models = self.store.setting("speaker_models")
             require(speaker_models, "MODEL_MISSING", "請先在模型設定選擇講者模型資料夾。")
             task["diarization"] = {
-                "models": {k: speaker_models[k] for k in ("segmentation", "embedding")},
+                "models": {k: speaker_models[k] for k in ("segmentation", "embedding", "voiceprint") if speaker_models.get(k)},
                 "hashes": speaker_models["hashes"], "speaker_count": request.get("speaker_count"),
                 "voiceprints": [{k: v[k] for k in ("id", "person_id", "name", "embedding", "model_hash", "quality", "enabled")}
                                 for v in self.store.voiceprints(enabled_only=True)]}
@@ -146,6 +148,7 @@ class JobRunner:
         command = [sys.executable, "--worker", str(task_path)] if getattr(sys, "frozen", False) else [sys.executable, "-m", "transcript_plus", "--worker", str(task_path)]
         env = {**os.environ, "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "PYTHONIOENCODING": "utf-8"}
         error = warning = None
+        preview, flushed = [], 0.
         with (artifacts / "worker.log").open("w", encoding="utf-8") as log:
             with self.process_lock:
                 require(not self.stop.is_set(), "INTERRUPTED", "服務正在關閉。")
@@ -163,6 +166,14 @@ class JobRunner:
                         error = AppError(event["error"]["code"], event["error"]["message"])
                     elif "warning" in event:
                         warning = event["warning"]
+                    elif "preview" in event:
+                        # Coalesce: the UI polls about once a second, so write at most that often.
+                        preview = (preview + [event["preview"]])[-PREVIEW_SEGMENTS:]
+                        if time.time() - flushed >= 1:
+                            flushed = time.time()
+                            with self.store.connection() as db:
+                                db.execute("UPDATE jobs SET preview=? WHERE id=? AND status='running'",
+                                           (json.dumps(preview, ensure_ascii=False), job["id"]))
                     elif event.get("stage"):
                         with self.store.connection() as db:
                             db.execute("UPDATE jobs SET stage=?,processed_ms=? WHERE id=? AND status='running'",

@@ -46,6 +46,8 @@ class Store:
             """)
             if "speakers" not in {row[1] for row in db.execute("PRAGMA table_info(projects)")}:
                 db.execute("ALTER TABLE projects ADD COLUMN speakers TEXT")
+            if "preview" not in {row[1] for row in db.execute("PRAGMA table_info(jobs)")}:
+                db.execute("ALTER TABLE jobs ADD COLUMN preview TEXT")  # live transcript preview while ASR decodes
             db.execute("PRAGMA user_version=2")
 
     @contextmanager
@@ -94,7 +96,11 @@ class Store:
         with self.connection() as db:
             rows = db.execute("""SELECT j.*, p.title FROM jobs j JOIN projects p ON p.id=j.project_id
                 ORDER BY j.created DESC LIMIT 100""").fetchall()
-        return [dict(row) for row in rows]
+        result = [dict(row) for row in rows]
+        for job in result:  # the preview only means something while the job runs
+            raw = job.pop("preview", None)
+            job["preview"] = json.loads(raw) if raw and job["status"] == "running" else []
+        return result
 
     def setting(self, key, default=None):
         with self.connection() as db:

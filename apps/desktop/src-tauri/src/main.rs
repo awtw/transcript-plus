@@ -479,6 +479,18 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            // 小螢幕（或系統縮放使邏輯解析度偏低）時，預設視窗不可大於螢幕的 90%，否則內容會被截掉。
+            if let Some(window) = app.get_webview_window("main") {
+                if let (Ok(Some(monitor)), Ok(size)) = (window.current_monitor(), window.outer_size()) {
+                    let area = monitor.size();
+                    let width = size.width.min(area.width / 10 * 9).max(1);
+                    let height = size.height.min(area.height / 10 * 9).max(1);
+                    if width != size.width || height != size.height {
+                        let _ = window.set_size(tauri::PhysicalSize::new(width, height));
+                        let _ = window.center();
+                    }
+                }
+            }
             let core = Core::start(app)?;
             app.manage(core);
             Ok(())

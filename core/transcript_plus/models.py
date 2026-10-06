@@ -8,6 +8,7 @@ from .media import file_hash
 
 
 REQUIRED = ("model.bin", "config.json", "tokenizer.json")
+VOICEPRINT_DEFAULT = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 
 
 def inspect_model(path):
@@ -36,14 +37,21 @@ def find_speaker_models(path):
     embedding = next((p for p in (root / "nemo_en_titanet_small.onnx", *sorted(root.glob("*titanet*.onnx"))) if p.is_file()), None)
     require(segmentation and embedding, "MODEL_MISSING",
             "請選含 segmentation/model.onnx（pyannote 分段）與 nemo_en_titanet_small.onnx（聲紋）的資料夾。")
-    return {"segmentation": plain_path(segmentation), "embedding": plain_path(embedding), "name": root.name,
-            "hashes": {"segmentation": file_hash(segmentation), "embedding": file_hash(embedding)}}
+    # Optional Chinese voiceprint model (ERes2Net): identifies *who* far better than TitaNet, while TitaNet clusters better.
+    voiceprint = next((p for p in (root / VOICEPRINT_DEFAULT,) if p.is_file()), None)
+    result = {"segmentation": plain_path(segmentation), "embedding": plain_path(embedding), "name": root.name,
+              "hashes": {"segmentation": file_hash(segmentation), "embedding": file_hash(embedding)}}
+    if voiceprint:
+        result["voiceprint"] = plain_path(voiceprint)
+        result["hashes"]["voiceprint"] = file_hash(voiceprint)
+    return result
 
 
 def diarization_ready(store):
     models = store.setting("speaker_models")
     runtime = all(importlib.util.find_spec(name) is not None for name in ("sherpa_onnx", "numpy"))
-    available = bool(models and all(Path(models[key]).is_file() for key in ("segmentation", "embedding")))
+    available = bool(models and all(Path(models[key]).is_file() for key in ("segmentation", "embedding"))
+                     and Path(models.get("voiceprint") or models["embedding"]).is_file())
     return models, available, runtime
 
 
@@ -57,6 +65,6 @@ def status(store):
     speaker_models, speakers_available, speakers_runtime = diarization_ready(store)
     return {"model": model, "available": available,
             "runtime_available": runtime,
-            "speaker_model": {"name": speaker_models["name"]} if speaker_models else None,
+            "speaker_model": {"name": speaker_models["name"], "voiceprint": bool(speaker_models.get("voiceprint"))} if speaker_models else None,
             "diarization_available": speakers_available and speakers_runtime,
             "summary_available": False}

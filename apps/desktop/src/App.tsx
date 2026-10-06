@@ -1085,6 +1085,7 @@ export default function App() {
               <strong>
                 {status?.models.speaker_model?.name ?? "尚未設定"}
                 {status && !status.models.diarization_available && status.models.speaker_model ? "（無法使用）" : ""}
+                {status?.models.speaker_model?.voiceprint ? "・中文聲紋模型（ERes2Net）" : ""}
               </strong>
               <span>運算資源</span>
               <strong>
@@ -1694,6 +1695,15 @@ export function JobProgress({ job, duration }: { job: Job; duration: number }) {
     <small>{detail}</small>
     {elapsed != null && <small>已執行 {time(elapsed)}</small>}
     {known && <small>每段辨識完成後更新；靜音略過或較難辨識時，進度可能暫停或跳動。</small>}
+    {!!job.preview?.length && (
+      <ol className="live-preview" aria-label="即時辨識預覽" aria-live="off">
+        {job.preview.map((item) => (
+          <li key={item.start_ms}>
+            <time>{time(item.start_ms)}</time> {item.text}
+          </li>
+        ))}
+      </ol>
+    )}
   </>;
 }
 
@@ -1716,6 +1726,7 @@ function SpeakersPanel({
 }) {
   const summary = project.speaker_summary;
   const [count, setCount] = useState("");
+  const [forced, setForced] = useState(false);
   const [registering, setRegistering] = useState<string | null>(null);
   const [person, setPerson] = useState("");
   const [newName, setNewName] = useState("");
@@ -1783,8 +1794,11 @@ function SpeakersPanel({
               {time(g.seconds * 1000)} · {g.segments} 段
             </span>
             {g.name_source === "voiceprint" && (
-              <span className="badge green" title={`相似度 ${g.similarity?.toFixed(2)}`}>
-                聲紋比對
+              <span
+                className="badge green"
+                title="聲音有多像已註冊的聲紋，不是答對的機率"
+              >
+                聲紋比對{g.similarity_percent != null && ` · 相似度 ${g.similarity_percent}%`}
               </span>
             )}
           </div>
@@ -1909,13 +1923,26 @@ function SpeakersPanel({
         </div>
       ))}
       {people.length > 0 && summary && (
-        <button
-          className="secondary"
-          disabled={disabled}
-          onClick={() => command("speaker.rematch", {})}
-        >
-          以目前聲紋重新比對這份錄音
-        </button>
+        <>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={forced}
+              disabled={disabled}
+              onChange={(e) => setForced(e.target.checked)}
+            />{" "}
+            強制比對：每位已啟用的聲紋最多對應一個分群（未啟用者視為未出席）
+          </label>
+          <button
+            className="secondary"
+            disabled={disabled}
+            onClick={() =>
+              command("speaker.rematch", { match_mode: forced ? "forced" : "fuzzy" })
+            }
+          >
+            以目前聲紋重新比對這份錄音
+          </button>
+        </>
       )}
     </div>
   );

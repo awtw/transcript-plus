@@ -191,6 +191,7 @@ def execute(task):
                              "review_reasons": review_reasons(source)})
             if engine != "mlx":
                 progress(end)
+                emit(preview={"start_ms": start, "end_ms": end, "text": source["text"].strip()})
         segments = merge_overlaps(segments)
         doc = {"schema_version": 1, "duration_ms": duration, "language": language,
                "model_hash": model_info["model_hash"], "engine": engine, "asr_parameters": settings,

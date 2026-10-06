@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "Transcript Plus",
-        "width": 1320,
-        "height": 860,
-        "minWidth": 980,
-        "minHeight": 640
+        "width": 1280,
+        "height": 800,
+        "minWidth": 720,
+        "minHeight": 560
       }
     ],
     "security": {
