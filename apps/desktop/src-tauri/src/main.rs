@@ -222,6 +222,7 @@ async fn rpc(app: tauri::AppHandle, method: String, params: Value) -> Result<Val
         "glossary.set",
         "summary.start",
         "model.configure_summary",
+        "model.configure_speakers",
         "speaker.analyze",
         "speaker.rename_group",
         "speaker.assign",

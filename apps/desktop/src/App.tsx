@@ -72,6 +72,7 @@ export default function App() {
   const [people, setPeople] = useState<Person[]>([]);
   const [glossary, setGlossary] = useState<string | null>(null);
   const [summaryPath, setSummaryPath] = useState("");
+  const [speakerPath, setSpeakerPath] = useState("");
   const playbackPath = playback?.projectId === project?.id ? playback?.path : undefined;
   const [format, setFormat] = useState("srt");
   const [split, setSplit] = useState<Cue | null>(null);
@@ -1131,6 +1132,28 @@ export default function App() {
             >
               <Users size={16} />
               選擇講者模型資料夾
+            </button>
+            <label className="field-label">
+              或貼上講者模型資料夾完整路徑
+              <input
+                type="text"
+                value={speakerPath}
+                placeholder="/Users/.../fabo-asr/models/speakers"
+                onChange={(e) => setSpeakerPath(e.target.value)}
+              />
+            </label>
+            <button
+              className="secondary full"
+              disabled={!desktop || busy || !speakerPath.trim()}
+              onClick={() =>
+                act(async () => {
+                  await rpc("model.configure_speakers", { path: speakerPath.trim() });
+                  await refresh();
+                  setNotice("已驗證並設定講者模型。");
+                })
+              }
+            >
+              套用講者模型路徑
             </button>
             <p className="footnote">
               需含 segmentation/model.onnx 與 nemo_en_titanet_small.onnx（與 fabo-asr 的 models/speakers 相同）。
