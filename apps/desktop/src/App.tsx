@@ -71,6 +71,7 @@ export default function App() {
   const [speakerCount, setSpeakerCount] = useState("");
   const [people, setPeople] = useState<Person[]>([]);
   const [glossary, setGlossary] = useState<string | null>(null);
+  const [summaryPath, setSummaryPath] = useState("");
   const playbackPath = playback?.projectId === project?.id ? playback?.path : undefined;
   const [format, setFormat] = useState("srt");
   const [split, setSplit] = useState<Cue | null>(null);
@@ -1155,6 +1156,28 @@ export default function App() {
             >
               <Sparkles size={16} />
               選擇摘要模型檔案（.gguf）
+            </button>
+            <label className="field-label">
+              或貼上 .gguf 完整路徑
+              <input
+                type="text"
+                value={summaryPath}
+                placeholder="/Users/.../gemma-4-E4B-it-Q4_0.gguf"
+                onChange={(e) => setSummaryPath(e.target.value)}
+              />
+            </label>
+            <button
+              className="secondary full"
+              disabled={!desktop || busy || !summaryPath.trim()}
+              onClick={() =>
+                act(async () => {
+                  await rpc("model.configure_summary", { path: summaryPath.trim() });
+                  await refresh();
+                  setNotice("已驗證並設定摘要模型。");
+                })
+              }
+            >
+              套用路徑
             </button>
             <p className="footnote">
               建議使用已通過繁中測試的 Gemma 4 E4B（與 fabo-asr 的 models/summary 相同）。模型只在產生摘要時於本機啟動，不下載、不連外；模型下載管理尚在開發中。
