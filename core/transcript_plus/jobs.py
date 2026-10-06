@@ -35,7 +35,7 @@ class JobRunner:
         require(language in ("", "zh", "en"), "INVALID_INPUT", "不支援的語言設定。")
         require(type(word_timestamps) is bool and type(diarize) is bool, "INVALID_INPUT", "設定必須為布林值。")
         require(profile in PROFILES, "INVALID_INPUT", "不支援的轉錄方案。")
-        require(kind in ("transcribe", "diarize"), "INVALID_INPUT", "不支援的工作類型。")
+        require(kind in ("transcribe", "diarize", "summary"), "INVALID_INPUT", "不支援的工作類型。")
         require(speaker_count is None or (type(speaker_count) is int and 1 <= speaker_count <= 32),
                 "INVALID_INPUT", "講者人數需為 1–32 的整數或留空。")
         project = self.store.project(project_id)
@@ -43,6 +43,14 @@ class JobRunner:
             diarize = True
             require(project["transcript"], "NOT_READY", "請先完成轉錄。")
         model = self.store.setting("asr_model")
+        summary_config = None
+        if kind == "summary":
+            diarize = False
+            require(project["transcript"] and project["transcript"]["segments"], "NOT_READY", "請先完成轉錄。")
+            summary_model, present, server = models.summary_ready(self.store)
+            require(summary_model and present, "MODEL_MISSING", "請先在模型設定選擇摘要模型（.gguf）。")
+            require(server, "RUNTIME_MISSING", "找不到 llama-server，請安裝 llama.cpp 或在設定指定其位置。")
+            summary_config = {"binary": server, "model": summary_model}
         if kind == "transcribe":
             require(model and Path(model["path"]).is_dir(), "MODEL_MISSING", "請先在模型設定選擇本機模型。")
             engine = model.get("engine", "faster-whisper")
@@ -55,6 +63,8 @@ class JobRunner:
         request = {"language": language, "word_timestamps": word_timestamps, "profile": profile,
                    "diarize": diarize, "speaker_count": speaker_count, "kind": kind}
         stored = {"request": request}
+        if summary_config:
+            stored["summary"] = summary_config
         if kind == "transcribe":
             engine = model.get("engine", "faster-whisper")
             stored.update(language=language, model=model, profile=profile,
@@ -108,7 +118,9 @@ class JobRunner:
             if not row:
                 return False
             job = dict(row)
-            db.execute("UPDATE jobs SET status='running',stage='preprocess',started=? WHERE id=?", (time.time(), job["id"]))
+            kind = json.loads(job["parameters"]).get("request", {}).get("kind")
+            db.execute("UPDATE jobs SET status='running',stage=?,started=? WHERE id=?",
+                       ("summary_loading" if kind == "summary" else "preprocess", time.time(), job["id"]))
         try:
             self.execute(job)
         except Exception as exc:
@@ -126,8 +138,9 @@ class JobRunner:
         artifacts = self.store.root / "artifacts" / project["id"]
         artifacts.mkdir(parents=True, exist_ok=True)
         source = self.store.root / project["media_path"]
-        require(file_hash(source) == project["media_hash"], "MEDIA_CHANGED", "專案影音已變更或毀損。")
         request = params.get("request", {})
+        if request.get("kind") != "summary":  # A summary reads only the saved transcript; skip hashing the media.
+            require(file_hash(source) == project["media_hash"], "MEDIA_CHANGED", "專案影音已變更或毀損。")
         task = {**params, "job_id": job["id"], "media_path": str(source), "media_hash": project["media_hash"],
                 "duration_ms": project["duration_ms"], "audio_stream": project["media_info"]["audio_stream"],
                 "artifact_dir": str(artifacts), "kind": request.get("kind", "transcribe")}
@@ -139,7 +152,7 @@ class JobRunner:
                 "hashes": speaker_models["hashes"], "speaker_count": request.get("speaker_count"),
                 "voiceprints": [{k: v[k] for k in ("id", "person_id", "name", "embedding", "model_hash", "quality", "enabled")}
                                 for v in self.store.voiceprints(enabled_only=True)]}
-        if task["kind"] == "diarize":
+        if task["kind"] in ("diarize", "summary"):
             snapshot = artifacts / f'transcript-{job["id"]}.json'
             atomic_json(snapshot, project["transcript"])
             task["transcript_path"] = str(snapshot)
@@ -189,6 +202,8 @@ class JobRunner:
                     self.process, self.active_job = None, None
         analysis_path = artifacts / f'analysis-{job["id"]}.json'
         analysis = json.loads(analysis_path.read_text(encoding="utf-8")) if analysis_path.is_file() else None
+        if task["kind"] == "summary":
+            return self.finish_summary(job, project, artifacts / f'summary-{job["id"]}.json')
         if task["kind"] == "diarize":
             require(analysis, "DIARIZATION_FAILED", "講者分析沒有產生結果。")
             return self.finish_diarization(job, project, analysis)
@@ -214,6 +229,18 @@ class JobRunner:
                        ("complete" if result["segments"] else "no_speech", warning, time.time(), job["id"]))
         self.discard_scratch(project["id"], job["id"])
 
+    def finish_summary(self, job, project, path):
+        """Bind the result to the revision it was generated from; later edits make it stale, never silently current."""
+        result = json.loads(path.read_text(encoding="utf-8"))
+        with self.store.connection() as db:
+            status = db.execute("SELECT status FROM jobs WHERE id=?", (job["id"],)).fetchone()[0]
+            if status != "running" or self.stop.is_set():
+                return
+            self.store.save_summary(project["id"], {**result, "source_revision": job["input_revision"], "job_id": job["id"],
+                                                    "generated": time.time()}, db)
+            db.execute("UPDATE jobs SET status='completed',stage='complete',finished=? WHERE id=?", (time.time(), job["id"]))
+        self.discard_scratch(project["id"], job["id"])
+
     def finish_diarization(self, job, project, analysis):
         """Apply labels to the newest transcript by segment id, so edits made while analyzing are kept."""
         with self.store.connection() as db:
@@ -230,6 +257,6 @@ class JobRunner:
 
     def discard_scratch(self, project_id, job_id):
         """Embeddings and transcript snapshots are large and already stored in the database."""
-        for pattern in (f"analysis-{job_id}.json", f"diarization-*{job_id}.json", f"transcript-{job_id}.json"):
+        for pattern in (f"analysis-{job_id}.json", f"diarization-*{job_id}.json", f"transcript-{job_id}.json", f"summary-{job_id}.json"):
             for path in (self.store.root / "artifacts" / project_id).glob(pattern):
                 path.unlink(missing_ok=True)

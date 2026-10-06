@@ -122,11 +122,43 @@ def diarize_main(spec_path):
     return 1
 
 
+def summarize_transcript(task, root):
+    """Start llama-server for this job only, summarize the saved transcript snapshot, then stop it."""
+    from . import summary
+    config = task["summary"]
+    model = config["model"]
+    try:
+        stat = Path(model["path"]).stat()
+        intact = stat.st_size == model["size_bytes"] and stat.st_mtime_ns == model["mtime_ns"]
+    except OSError:
+        intact = False
+    require(intact, "MODEL_CORRUPT", "摘要模型檔案已變更或不存在，請重新選擇。")
+    doc = json.loads(Path(task["transcript_path"]).read_text(encoding="utf-8"))
+    duration = task["duration_ms"]
+    emit(stage="summary_loading", processed_ms=None)
+    try:
+        with summary.LlamaServer(config["binary"], model["path"], model["alias"], root / "summary-server.log") as client:
+            def progress(done, total):
+                emit(stage="summary", processed_ms=round(duration * done / max(1, total)))
+            progress(0, 1)
+            out = summary.summarize(doc["segments"], client, progress)
+    except ValueError as exc:
+        raise AppError("SUMMARY_FAILED", f"{exc}。可重試；已儲存的逐字稿不受影響。") from exc
+    items = summary.attach_sources(out["items"], doc["segments"], uid)
+    atomic_json(root / f'summary-{task["job_id"]}.json', {
+        "items": items, "chunk_count": out["chunk_count"], "model": model["alias"], "model_sha256": model["sha256"],
+        "covered_segments": len(out["covered_segment_indices"]), "total_segments": len(doc["segments"]),
+        "quality_status": "unscored"})
+    emit(stage="complete", processed_ms=duration)
+
+
 def execute(task):
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     root = Path(task["artifact_dir"])
     root.mkdir(parents=True, exist_ok=True)
+    if task.get("kind") == "summary":
+        return summarize_transcript(task, root)
     audio = root / "audio.wav"
     marker = root / "preprocess.json"
     binding = {"source_hash": task["media_hash"], "pipeline": "pcm16-mono-v1", "stream": task["audio_stream"]}

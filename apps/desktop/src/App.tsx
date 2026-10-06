@@ -28,6 +28,7 @@ import {
   HardDrive,
   Mic2,
   Users,
+  Quote,
 } from "lucide-react";
 import { api, desktop, message, rpc, stages, statuses, time } from "./api";
 import type {
@@ -39,6 +40,7 @@ import type {
   ProjectSummary,
   Segment,
   SpeakerGroup,
+  SummaryItem,
 } from "./types";
 
 type Tab = "transcript" | "captions" | "speakers" | "summary";
@@ -119,7 +121,12 @@ export default function App() {
   useEffect(() => {
     if (!project || editing || saveState !== "已儲存") return;
     const latest = projects.find((p) => p.id === project.id);
-    if (latest && latest.revision !== project.revision) {
+    // A finished summary changes no revision, so its timestamp triggers the reload too.
+    if (
+      latest &&
+      (latest.revision !== project.revision ||
+        (latest.summary_at ?? null) !== (project.summary?.generated ?? null))
+    ) {
       const id = project.id;
       api
         .project(id)
@@ -539,10 +546,15 @@ export default function App() {
                   {["srt", "vtt", "txt", "json"].map((f) => (
                     <option key={f}>{f}</option>
                   ))}
+                  <option value="md">摘要與待辦 (md)</option>
                 </select>
                 <button
                   className="primary"
-                  disabled={!project.transcript || editLocked}
+                  disabled={
+                    !project.transcript ||
+                    editLocked ||
+                    (format === "md" && (!project.summary || project.summary_stale))
+                  }
                   onClick={() =>
                     act(async () => {
                       const path = await api.export(project, format);
@@ -783,10 +795,20 @@ export default function App() {
                   />
                 )}
                 {tab === "summary" && (
-                  <Empty
-                    icon={<Sparkles />}
-                    title="摘要與待辦尚未啟用"
-                    text="目前開發版先提供轉錄與字幕流程。本機摘要模型、原文引用及待辦整理將在後續階段接入。"
+                  <SummaryPanel
+                    project={project}
+                    ready={!!status?.models.summary_available}
+                    modelName={status?.models.summary_model?.name ?? null}
+                    serverFound={!!status?.models.summary_server}
+                    working={!!working}
+                    disabled={editLocked || busy}
+                    openSettings={() => setSettings(true)}
+                    seek={seek}
+                    generate={() =>
+                      act(async () => {
+                        await rpc("summary.start", { project_id: project.id });
+                      })
+                    }
                   />
                 )}
               </div>
@@ -1110,7 +1132,32 @@ export default function App() {
               選擇講者模型資料夾
             </button>
             <p className="footnote">
-              需含 segmentation/model.onnx 與 nemo_en_titanet_small.onnx（與 fabo-asr 的 models/speakers 相同）。AI 摘要與模型下載管理尚在開發中。
+              需含 segmentation/model.onnx 與 nemo_en_titanet_small.onnx（與 fabo-asr 的 models/speakers 相同）。
+            </p>
+            <div className="settings-facts">
+              <span>摘要模型</span>
+              <strong>
+                {status?.models.summary_model?.name ?? "尚未設定"}
+                {status?.models.summary_model && !status.models.summary_model.present ? "（檔案已變更或不存在）" : ""}
+              </strong>
+              <span>llama-server</span>
+              <strong>{status ? (status.models.summary_server ? "已找到" : "未找到（macOS：brew install llama.cpp）") : "—"}</strong>
+            </div>
+            <button
+              className="secondary full"
+              disabled={!desktop || busy}
+              onClick={() =>
+                act(async () => {
+                  const model = await api.chooseSummaryModel();
+                  if (model) setNotice("已驗證並設定摘要模型。");
+                })
+              }
+            >
+              <Sparkles size={16} />
+              選擇摘要模型檔案（.gguf）
+            </button>
+            <p className="footnote">
+              建議使用已通過繁中測試的 Gemma 4 E4B（與 fabo-asr 的 models/summary 相同）。模型只在產生摘要時於本機啟動，不下載、不連外；模型下載管理尚在開發中。
             </p>
             <label className="field-label">
               術語表（選填，提升專有名詞辨識）
@@ -1679,11 +1726,14 @@ function SplitDialog({
 
 
 export function JobProgress({ job, duration }: { job: Job; duration: number }) {
-  const known = job.stage === "asr" && job.processed_ms != null;
+  const summarizing = job.stage === "summary";
+  const known = (job.stage === "asr" || summarizing) && job.processed_ms != null;
   const percent = known ? Math.min(99, Math.max(0, Math.floor(job.processed_ms! / duration * 100))) : undefined;
   const elapsed = job.started == null ? null : Math.max(0, Date.now() - job.started * 1000);
   const detail = job.stage === "saving" ? "音訊辨識完成，正在整理並儲存結果"
     : job.stage === "model_loading" ? "正在驗證及載入本機模型，尚未開始辨識"
+    : job.stage === "summary_loading" ? "正在啟動本機摘要模型，首次載入可能需要一分鐘"
+    : summarizing ? `已整理 ${percent}%（每個段落批次完成後更新）`
     : known && job.processed_ms! > 0 ? `已處理 ${time(job.processed_ms!)} / ${time(duration)}（${percent}%）`
     : known ? "正在辨識第一段音訊，完成後會更新進度"
     : "正在準備音訊，進度尚無法估計";
@@ -1694,7 +1744,7 @@ export function JobProgress({ job, duration }: { job: Job; duration: number }) {
     </div>
     <small>{detail}</small>
     {elapsed != null && <small>已執行 {time(elapsed)}</small>}
-    {known && <small>每段辨識完成後更新；靜音略過或較難辨識時，進度可能暫停或跳動。</small>}
+    {known && !summarizing && <small>每段辨識完成後更新；靜音略過或較難辨識時，進度可能暫停或跳動。</small>}
     {!!job.preview?.length && (
       <ol className="live-preview" aria-label="即時辨識預覽" aria-live="off">
         {job.preview.map((item) => (
@@ -1705,6 +1755,140 @@ export function JobProgress({ job, duration }: { job: Job; duration: number }) {
       </ol>
     )}
   </>;
+}
+
+const KIND_SECTIONS: { kind: SummaryItem["kind"]; title: string }[] = [
+  { kind: "decision", title: "決議" },
+  { kind: "action", title: "待辦" },
+  { kind: "summary", title: "討論重點" },
+];
+
+export function SummaryPanel({
+  project,
+  ready,
+  modelName,
+  serverFound,
+  working,
+  disabled,
+  openSettings,
+  seek,
+  generate,
+}: {
+  project: Project;
+  ready: boolean;
+  modelName: string | null;
+  serverFound: boolean;
+  working: boolean;
+  disabled: boolean;
+  openSettings: () => void;
+  seek: (ms: number) => void;
+  generate: () => void;
+}) {
+  const data = project.summary;
+  const segmentIds = new Set(project.transcript?.segments.map((s) => s.id));
+  if (!project.transcript)
+    return (
+      <Empty
+        icon={<Sparkles />}
+        title="請先完成轉錄"
+        text="摘要與待辦依據已儲存的逐字稿產生，每一項都附原文引用。"
+      />
+    );
+  const missing = !ready
+    ? !modelName
+      ? "尚未設定本機摘要模型（.gguf）。"
+      : !serverFound
+        ? "找不到 llama-server，請安裝 llama.cpp（macOS：brew install llama.cpp）。"
+        : "摘要模型檔案已變更或不存在，請重新選擇。"
+    : null;
+  return (
+    <div className="summary-panel">
+      <div className="summary-bar">
+        <div>
+          <strong>摘要與待辦</strong>
+          <span className="muted">
+            {data
+              ? `${data.items.length} 項 · ${data.model} · 涵蓋 ${data.covered_segments}/${data.total_segments} 段`
+              : "尚未產生"}
+          </span>
+        </div>
+        <button className="primary" disabled={!ready || working || disabled} onClick={generate}>
+          <Sparkles size={14} />
+          {data ? "重新產生" : "產生摘要與待辦"}
+        </button>
+      </div>
+      {missing && (
+        <p className="notice-inline">
+          <AlertCircle size={14} /> {missing}
+          <button className="link" onClick={openSettings}>
+            前往模型與設定
+          </button>
+        </p>
+      )}
+      {data && project.summary_stale && (
+        <p className="notice-inline warning">
+          <AlertCircle size={14} /> 逐字稿在產生後已修改，此摘要可能已不符內容；引用保留產生當時的原文，請重新產生。匯出需先重新產生。
+        </p>
+      )}
+      {!data && !missing && (
+        <Empty
+          icon={<Sparkles />}
+          title="在本機整理會議重點"
+          text="模型只在需要時啟動，內容不離開這台電腦。決議與待辦必須有說話者明確承諾的原文；未明示的負責人與期限會留空。"
+        />
+      )}
+      {data && !data.items.length && (
+        <p className="footnote">沒有可由原文確定的重點、決議或待辦。</p>
+      )}
+      {data &&
+        KIND_SECTIONS.map(({ kind, title }) => {
+          const items = data.items.filter((i) => i.kind === kind);
+          if (!items.length) return null;
+          return (
+            <section key={kind} className={`summary-section ${project.summary_stale ? "stale" : ""}`}>
+              <h3>
+                {title} <small>{items.length}</small>
+              </h3>
+              {items.map((item) => (
+                <article key={item.id} className="summary-item">
+                  <p>{item.text}</p>
+                  {(item.owner || item.deadline) && (
+                    <p className="summary-meta">
+                      {item.owner && <span>負責人：{item.owner}</span>}
+                      {item.deadline && <span>期限：{item.deadline}</span>}
+                    </p>
+                  )}
+                  <ul className="citations">
+                    {item.citations.map((c, index) => {
+                      const live = !project.summary_stale && segmentIds.has(c.segment_id);
+                      return (
+                        <li key={`${c.segment_id}-${index}`}>
+                          <button
+                            className="cite-time"
+                            disabled={!live}
+                            title={live ? "跳到這段原文" : "逐字稿已修改，無法跳播"}
+                            onClick={() => seek(c.start_ms)}
+                          >
+                            {time(c.start_ms)}
+                          </button>
+                          <Quote size={11} />
+                          <span>{c.quote}</span>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </article>
+              ))}
+            </section>
+          );
+        })}
+      {data && (
+        <p className="footnote">
+          引用已逐字核對原文，但引用有效不代表語意必然正確，請人工確認。
+        </p>
+      )}
+    </div>
+  );
 }
 
 function SpeakersPanel({

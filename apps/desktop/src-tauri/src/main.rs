@@ -327,13 +327,41 @@ async fn choose_speaker_models(app: tauri::AppHandle) -> Result<Option<Value>, S
 }
 
 #[tauri::command]
+async fn choose_summary_model(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let window = app.get_webview_window("main").ok_or("找不到主視窗")?;
+        let Some(file) = app
+            .dialog()
+            .file()
+            .set_parent(&window)
+            .set_title("選擇本機摘要模型（.gguf）")
+            .add_filter("GGUF 模型", &["gguf"])
+            .blocking_pick_file()
+        else {
+            return Ok(None);
+        };
+        let path = file
+            .into_path()
+            .map_err(|e| e.to_string())?
+            .canonicalize()
+            .map(plain_path)
+            .map_err(|e| e.to_string())?;
+        app.state::<Core>()
+            .request("model.configure_summary", json!({"path":path}))
+            .map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
 async fn export_file(
     app: tauri::AppHandle,
     project_id: String,
     expected_revision: u64,
     format: String,
 ) -> Result<Option<String>, String> {
-    if !["txt", "srt", "vtt", "json"].contains(&format.as_str()) {
+    if !["txt", "srt", "vtt", "json", "md"].contains(&format.as_str()) {
         return Err("不支援的格式".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
@@ -506,6 +534,7 @@ fn main() {
             import_media,
             choose_model,
             choose_speaker_models,
+            choose_summary_model,
             export_file,
             set_dirty
         ])

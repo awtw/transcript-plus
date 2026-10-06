@@ -47,6 +47,31 @@ def find_speaker_models(path):
     return result
 
 
+def inspect_summary_model(path):
+    """A single GGUF file for llama.cpp. Hashed once here; later jobs only compare size and mtime (4+ GB)."""
+    model = Path(path).resolve(strict=True)
+    require(model.is_file() and model.suffix.lower() == ".gguf", "MODEL_MISSING", "請選擇 .gguf 摘要模型檔案。")
+    with model.open("rb") as handle:
+        require(handle.read(4) == b"GGUF", "MODEL_CORRUPT", "這不是有效的 GGUF 模型檔。")
+    stat = model.stat()
+    return {"path": plain_path(model), "name": model.stem, "alias": model.stem, "size_bytes": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns, "sha256": file_hash(model)}
+
+
+def summary_ready(store):
+    """(model setting, model file present and unchanged, llama-server path or None)."""
+    from .summary import find_server
+    model = store.setting("summary_model")
+    present = False
+    if model:
+        try:
+            stat = Path(model["path"]).stat()
+            present = stat.st_size == model["size_bytes"] and stat.st_mtime_ns == model["mtime_ns"]
+        except OSError:
+            pass
+    return model, present, find_server(store.setting("summary_server"))
+
+
 def diarization_ready(store):
     models = store.setting("speaker_models")
     runtime = all(importlib.util.find_spec(name) is not None for name in ("sherpa_onnx", "numpy"))
@@ -63,8 +88,11 @@ def status(store):
     if engine == "mlx":
         runtime = runtime and platform.system() == "Darwin" and platform.machine().lower() in ("arm64", "aarch64") and importlib.util.find_spec("mlx_whisper") is not None
     speaker_models, speakers_available, speakers_runtime = diarization_ready(store)
+    summary_model, summary_present, summary_server = summary_ready(store)
     return {"model": model, "available": available,
             "runtime_available": runtime,
             "speaker_model": {"name": speaker_models["name"], "voiceprint": bool(speaker_models.get("voiceprint"))} if speaker_models else None,
             "diarization_available": speakers_available and speakers_runtime,
-            "summary_available": False}
+            "summary_model": {"name": summary_model["name"], "present": summary_present} if summary_model else None,
+            "summary_server": bool(summary_server),
+            "summary_available": summary_present and bool(summary_server)}

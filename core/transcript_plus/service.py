@@ -4,7 +4,7 @@ from pathlib import Path
 import shutil
 import time
 
-from . import __version__, diarization, domain, hardware, models, speakers
+from . import __version__, diarization, domain, hardware, models, speakers, summary
 from .errors import AppError, require
 from .jobs import JobRunner
 from .media import file_hash, probe, prepare_playback
@@ -43,6 +43,11 @@ class Service:
         if method == "model.configure_speakers":
             self.store.set_setting("speaker_models", models.find_speaker_models(p["path"]))
             return models.status(self.store)
+        if method == "model.configure_summary":
+            self.store.set_setting("summary_model", models.inspect_summary_model(p["path"]))
+            return models.status(self.store)
+        if method == "summary.start":
+            return self.runner.enqueue(p["project_id"], kind="summary")
         if method == "glossary.set":
             text = p.get("text", "")
             require(isinstance(text, str) and len(text.strip()) <= 4000, "INVALID_INPUT", "術語表不得超過 4000 字元。")
@@ -85,6 +90,10 @@ class Service:
         if method == "export.render":
             project = self.store.project(p["project_id"])
             require(project["revision"] == p["expected_revision"], "REVISION_CONFLICT", "匯出前內容已更新，請重新載入。")
+            if p["format"] == "md":
+                require(project["summary"] and project["summary"]["source_revision"] == project["revision"], "STALE_SUMMARY",
+                        "摘要尚未產生或已過期，請先重新產生。")
+                return {"content": summary.to_markdown(project), "filename": f'{project["title"]}-摘要.md'}
             return {"content": domain.export_content(project, p["format"]), "filename": f'{project["title"]}.{p["format"]}'}
         raise AppError("UNKNOWN_METHOD", "不支援的操作。")
 
@@ -93,6 +102,7 @@ class Service:
         state = project.pop("speakers")
         project["speaker_summary"] = speakers.summary(project["transcript"], state) if state and project["transcript"] else None
         project["media_path"] = str(self.store.root / project["media_path"])
+        project["summary_stale"] = bool(project["summary"] and project["summary"]["source_revision"] != project["revision"])
         project["warnings"] = domain.caption_warnings(project["captions"], project["duration_ms"]) if project["captions"] else []
         return project
 

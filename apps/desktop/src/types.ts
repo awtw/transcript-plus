@@ -51,6 +51,7 @@ export interface ProjectSummary {
   created: number;
   updated: number;
   has_transcript: boolean;
+  summary_at?: number | null;
 }
 export interface SpeakerGroup {
   label: string;
@@ -80,7 +81,33 @@ export interface Person {
   seconds: number;
   created: number;
 }
+export interface SummaryCitation {
+  segment_id: string;
+  start_ms: number;
+  end_ms: number;
+  quote: string;
+}
+export interface SummaryItem {
+  id: string;
+  kind: "summary" | "decision" | "action";
+  text: string;
+  owner: string | null;
+  deadline: string | null;
+  commitment_quote: string | null;
+  citations: SummaryCitation[];
+}
+export interface SummaryResult {
+  items: SummaryItem[];
+  model: string;
+  source_revision: number;
+  generated: number;
+  chunk_count: number;
+  covered_segments: number;
+  total_segments: number;
+}
 export interface Project extends ProjectSummary {
+  summary: SummaryResult | null;
+  summary_stale: boolean;
   speaker_summary: SpeakerSummary | null;
   transcript: Transcript | null;
   captions: Track | null;
@@ -109,6 +136,8 @@ export interface ModelStatus {
   speaker_model: { name: string; voiceprint?: boolean } | null;
   diarization_available: boolean;
   summary_available: boolean;
+  summary_model: { name: string; present: boolean } | null;
+  summary_server: boolean;
 }
 export interface AppStatus {
   version: string;

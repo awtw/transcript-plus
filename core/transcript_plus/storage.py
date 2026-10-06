@@ -48,6 +48,8 @@ class Store:
                 db.execute("ALTER TABLE projects ADD COLUMN speakers TEXT")
             if "preview" not in {row[1] for row in db.execute("PRAGMA table_info(jobs)")}:
                 db.execute("ALTER TABLE jobs ADD COLUMN preview TEXT")  # live transcript preview while ASR decodes
+            if "summary" not in {row[1] for row in db.execute("PRAGMA table_info(projects)")}:
+                db.execute("ALTER TABLE projects ADD COLUMN summary TEXT")  # {source_revision, items, ...}
             db.execute("PRAGMA user_version=2")
 
     @contextmanager
@@ -76,7 +78,7 @@ class Store:
             row = db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
         require(row is not None, "NOT_FOUND", "找不到專案。")
         value = dict(row)
-        for key in ("transcript", "captions", "media_info", "speakers"):
+        for key in ("transcript", "captions", "media_info", "speakers", "summary"):
             value[key] = json.loads(value[key]) if value[key] else None
         value["captions_stale"] = bool(value["captions_stale"])
         return value
@@ -86,10 +88,19 @@ class Store:
             row = db.execute("SELECT speakers FROM projects WHERE id=?", (project_id,)).fetchone()
         return json.loads(row[0]) if row and row[0] else None
 
+    def save_summary(self, project_id, summary, db=None):
+        """Stored beside the transcript but never replaces it; staleness is derived from source_revision."""
+        if db is None:
+            with self.connection() as connection:
+                return self.save_summary(project_id, summary, connection)
+        db.execute("UPDATE projects SET summary=?,updated=? WHERE id=?",
+                   (json.dumps(summary, ensure_ascii=False), time.time(), project_id))
+
     def projects(self):
         with self.connection() as db:
             rows = db.execute("""SELECT id,title,filename,duration_ms,revision,created,updated,
-                transcript IS NOT NULL AS has_transcript FROM projects ORDER BY updated DESC""").fetchall()
+                transcript IS NOT NULL AS has_transcript,
+                json_extract(summary,'$.generated') AS summary_at FROM projects ORDER BY updated DESC""").fetchall()
         return [dict(row) for row in rows]
 
     def jobs(self):

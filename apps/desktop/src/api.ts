@@ -28,6 +28,7 @@ export const api = {
   importMedia: () => invoke<Project | null>("import_media"),
   chooseModel: () => invoke<ModelStatus | null>("choose_model"),
   chooseSpeakerModels: () => invoke<ModelStatus | null>("choose_speaker_models"),
+  chooseSummaryModel: () => invoke<ModelStatus | null>("choose_summary_model"),
   export: (project: Project, format: string) =>
     invoke<string | null>("export_file", {
       projectId: project.id,
@@ -54,6 +55,8 @@ export const stages: Record<string, string> = {
   diarization: "正在分辨講者",
   speaker_assign: "正在標註講者",
   saving: "正在儲存逐字稿",
+  summary_loading: "正在載入摘要模型",
+  summary: "正在整理摘要與待辦",
   complete: "轉錄完成",
   no_speech: "未偵測到語音",
 };
