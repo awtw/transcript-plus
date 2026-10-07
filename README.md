@@ -63,5 +63,7 @@ npm run desktop:build -- --bundles app
 3. [FABO ASR 參考評估](docs/FABO-ASR-REFERENCE.md)：現有程式證據、可移植部分及需新增的能力。
 4. [原始需求參考](reference-doc/subtitle_transcription_market_opportunities.md)。
 5. [實作與驗證紀錄](docs/IMPLEMENTATION.md)：已完成項目、限制、測試與下一個里程碑。
+6. [行動版架構（iOS／Android 獨立 App）](docs/MOBILE.md)：Rust 共用核心、原生 UI、路線圖與風險。
+7. [行動版 UI／UX 與上架規範](docs/MOBILE-UI.md)：資訊架構、畫面設計、無障礙、隱私與上架檢查表。
 
 設計與首次實作日期：2026-09-29。MVP 文件中的效能、品質及工期仍為規劃目標；短檔接線驗證不等於通過產品品質驗收。

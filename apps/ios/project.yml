@@ -1,0 +1,33 @@
+name: TranscriptPlus
+options:
+  bundleIdPrefix: com.transcriptplus
+  deploymentTarget:
+    iOS: "17.0"
+  developmentLanguage: zh-Hant
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  TranscriptPlus:
+    type: application
+    platform: iOS
+    sources: [TranscriptPlus]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.transcriptplus.mobile
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Transcript Plus
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: 錄音功能需要使用麥克風，錄下的聲音只會儲存在這支手機上。
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        TARGETED_DEVICE_FAMILY: "1,2"
+  TranscriptPlusTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [TranscriptPlusTests]
+    dependencies:
+      - target: TranscriptPlus

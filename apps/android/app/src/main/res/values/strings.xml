@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Transcript Plus</string>
+    <string name="tab_projects">專案</string>
+    <string name="tab_record">錄音</string>
+    <string name="tab_settings">設定</string>
+    <string name="empty_projects">還沒有專案</string>
+    <string name="empty_projects_hint">錄音或匯入音訊，全程在這支手機上處理。</string>
+    <string name="delete">刪除</string>
+    <string name="cancel">取消</string>
+    <string name="done">完成</string>
+    <string name="edit_segment">編輯段落</string>
+    <string name="record_consent">錄製他人聲音前，請先取得對方同意。錄音功能開發中。</string>
+    <string name="privacy_note">所有轉錄都在這支手機上進行，錄音與逐字稿不會上傳。只有下載模型時需要網路。</string>
+</resources>

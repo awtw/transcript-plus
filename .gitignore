@@ -16,3 +16,7 @@ test-results/
 playwright-report/
 apps/desktop/src-tauri/resources/core/
 apps/desktop/src-tauri/gen/
+apps/ios/*.xcodeproj/
+apps/android/.gradle/
+apps/android/local.properties
+apps/android/**/build/
